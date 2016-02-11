@@ -3,6 +3,7 @@
   Extract the orientation of the cromophore CRO from XTC-traj files
   orientation: theta in degrees (pitch)
   high specificity to the problem assumed -- not easily ransferrable to other applications
+  PLUMED Driver is faster in this -- use plumed instead !!
 """
 
 # coding: utf-8
@@ -21,6 +22,8 @@ kT = 2.5775  # kJ/mol*310K
 NBINS = 90
 NWINS = 20
 
+print """ PLUMED Driver is orders of magnitude faster -- use it instead !!! """
+exit()
 
 # In[6]:
 
@@ -38,7 +41,6 @@ except:
 cro_inds = t.topology.select('resname CRO')
 cro_inds_amino = [ i for i in cro_inds if t.top.atom(i).name in ['C1', 'C2', 'N2', 'N3', 'CA2'] ]
 cro_inds_tyr   = [ i for i in cro_inds if t.top.atom(i).name in ['CG2', 'CD1', 'CD2', 'CE1', 'CE2', 'CZ'] ]
-
 
 
 # In[14]:
