@@ -24,10 +24,6 @@ import cPickle
 
 # constants
 kT = 2.5775  # kJ/mol*310K
-dfnm = "PitchTdmBias.traj"      # Plumed PITCH filename convention
-dfname = "tdm_theta" # default filename for the TDM orientation files
-dfext = ".dat"       #  -- and their extention
-
 
 
 def weighted_avg_and_std(values, weights):
@@ -114,7 +110,7 @@ def read_trajs(dfnm, NWINS=None):
     return trajs
 
 
-def get_weight_factors(trajs, winwfs):
+def get_weight_factors(trajs, winbiases):
     """
     Gives weight factors as read from Plumed's Pitch files
 
@@ -122,8 +118,8 @@ def get_weight_factors(trajs, winwfs):
     ----------
     trajs : list of arrays
         obtained from read_trajs
-    winwfs : np.array
-        of windows-weight factors
+    winbiases : np.array
+        of windows biasing weight factors (in kT units)
         read-in from previous dTRAM or WHAM estimation of FEP
 
     Returns
@@ -141,21 +137,38 @@ def get_weight_factors(trajs, winwfs):
         # window weights are already in kT units,
         # they are with -sign as they give
         # the Boltzmann-weights for individual windows
-        wfs.append(np.exp(traj[:, -1]/kT - winwfs[i]))
+        wfs.append(np.exp(traj[:, -1]/kT - winbiases[i]))
     return wfs
+
+
+    def weight_switch(vals, thres):
+        """
+        """
+        j=0
+        for i in xrange(vals.shape[0]):
+            if vals[i] > thres:
+                delta = abs(vals[i]-thres)
+                vals[i] = thres + delta*math.exp(-delta/thres)
+                j += 1
+        print j, "values out of", vals.shape[0], "(", j/vals.shape[0]*100.0, "%) were above threshold", thres, ".\n Their weights were reduced exponentially. "
+        return vals
+
+
 
 #%%
 
 if __name__ == '__main__':
+    dfnm = "PitchTdmBias.traj"        # Plumed PITCH filename convention
+    max_weight_thres = math.exp(3.0)  # threshold for maximal weight factor (~3kT here)
     # weight factors of the windows
     print("Loading-in the simulation windows' weight factors...")
-    with open("pitch_dTRAM-FEP_windows.pickle","r") as f: winwfs = cPickle.load(f)
-    NWINS = winwfs.shape[0]
-    winwfs -= winwfs.min()
+    with open("pitch_dTRAM-FEP_windows.pickle","r") as f: winbiases = cPickle.load(f)
+    NWINS = winbiases.shape[0]
+    winbiases -= winbiases.min()
 
     trajs = read_trajs(dfnm, NWINS)
 
-    wfs = get_weight_factors(trajs, winwfs)
+    wfs = get_weight_factors(trajs, winbiases)
 #%%
 
     wfs_flat = wfs[0]
@@ -166,11 +179,19 @@ if __name__ == '__main__':
     for traj in trajs[1:]:
         tdms_flat = np.append(tdms_flat, traj[:,-2])
 
+
+    # get rid of over-weighted values (that might destroy my statistics)
+    wfs_flat = weight_switch(wfs_flat, max_weight_thres)
+
+
 #%%
     print "average weighted value and std: \n", weighted_avg_and_std(values=tdms_flat, weights=wfs_flat)
 
-    hist  = np.histogram(tdms_flat, weights=wfs_flat, bins=90, range=(0.0, 90.0))
+    hist  = np.histogram(tdms_flat, weights=wfs_flat, bins=90, range=(0.0, 90.0), density=True)
     plt.plot(hist[1][:-1], hist[0])
     plt.show()
     #plt.plot(tdms_flat)
     #plt.show()
+
+    wfs_flat.max()
+
