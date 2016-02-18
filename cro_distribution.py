@@ -141,17 +141,35 @@ def get_weight_factors(trajs, winbiases):
     return wfs
 
 
-    def weight_switch(vals, thres):
-        """
-        """
-        j=0
-        for i in xrange(vals.shape[0]):
-            if vals[i] > thres:
-                delta = abs(vals[i]-thres)
-                vals[i] = thres + delta*math.exp(-delta/thres)
-                j += 1
-        print j, "values out of", vals.shape[0], "(", j/vals.shape[0]*100.0, "%) were above threshold", thres, ".\n Their weights were reduced exponentially. "
-        return vals
+def weight_switch(vals, thres):
+    """
+    applies a switching function on an array element-wise for
+    elements that are above given thershold
+
+    For values that are delta above threshold,
+    the switching function is:
+      thres + delta*math.exp(-delta/thres)
+
+    Parameters
+    ----------
+    vals : array
+        input values for the switching function
+    thres : float
+        threshold value for the switching function
+
+    Returns
+    -------
+    weight_switch : np.array
+        of switched/corrected values (floats)
+    """
+    j=0
+    for i in xrange(vals.shape[0]):
+        if vals[i] > thres:
+            delta = abs(vals[i]-thres)
+            vals[i] = thres + delta*math.exp(-delta/thres)
+            j += 1
+    print j, "values out of", vals.shape[0], "(", j/vals.shape[0]*100.0, "%) were above threshold", thres, ".\n Their weights were reduced exponentially. "
+    return vals
 
 
 
@@ -164,7 +182,7 @@ if __name__ == '__main__':
     print("Loading-in the simulation windows' weight factors...")
     with open("pitch_dTRAM-FEP_windows.pickle","r") as f: winbiases = cPickle.load(f)
     NWINS = winbiases.shape[0]
-    winbiases -= winbiases.min()
+    winbiases -= winbiases.min()   # shift to zero so that the most probable states have weights around 1 and I can more easily fight noisy fluctuation in weights+sampling
 
     trajs = read_trajs(dfnm, NWINS)
 
@@ -179,7 +197,6 @@ if __name__ == '__main__':
     for traj in trajs[1:]:
         tdms_flat = np.append(tdms_flat, traj[:,-2])
 
-
     # get rid of over-weighted values (that might destroy my statistics)
     wfs_flat = weight_switch(wfs_flat, max_weight_thres)
 
@@ -188,10 +205,11 @@ if __name__ == '__main__':
     print "average weighted value and std: \n", weighted_avg_and_std(values=tdms_flat, weights=wfs_flat)
 
     hist  = np.histogram(tdms_flat, weights=wfs_flat, bins=90, range=(0.0, 90.0), density=True)
-    plt.plot(hist[1][:-1], hist[0])
-    plt.show()
-    #plt.plot(tdms_flat)
-    #plt.show()
 
-    wfs_flat.max()
+    plt.xlabel("tdm orientation [deg]")
+    plt.ylabel("probability density")
+    binwidth = hist[1][1] - hist[1][0]
+    plt.plot(hist[1][:-1]+binwidth*0.5, hist[0], lw=2.0, color='black')
+    plt.savefig("tdm_WHAM-distrib.png", papertype="letter", dpi=300)
+    plt.show()
 
