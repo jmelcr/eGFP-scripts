@@ -1,26 +1,30 @@
 #!/usr/bin/env python
 """
-  Calculate the weighted distribution of the TDM orientation.
-  Several thing assumed:
-     - PITCH recorded at 2x higher pace than XTC trajs
-     - for some reason, the time stamps do not agree
-     - everything fits into the memory at once
-     - simulations can be of different length
-  orientation: theta in degrees (pitch)
-  high specificity to the problem assumed
-  -- not easily ransferrable to other applications
+  Libraries and routines for calculation of the
+  re-weighted distribution of the TDM orientation
+  in a WHAM-like fashion.
+   This assumes that each individual simulation (window)
+  was sampled from its global equilibrium.
+   This is usually a good assumption for Umbrella sampling simulations.
+
+  As most often in my coding to be simple and fast,
+  I assume quite a bunch of stuff here, e.g.:
+    Filenaming is of particular type
+    the format is specific,
+    data range and the numbers fit into some criteria
+     (or just different data was not tested)
 """
 # -*- coding: utf-8 -*-
 
-import pytram
+#import pytram
 import numpy as np
 import math
-
+import matplotlib.pyplot as plt
 import cPickle
 
 # constants
 kT = 2.5775  # kJ/mol*310K
-dfnm = "PITCH."      # Plumed PITCH filename convention
+dfnm = "PitchTdmBias.traj"      # Plumed PITCH filename convention
 dfname = "tdm_theta" # default filename for the TDM orientation files
 dfext = ".dat"       #  -- and their extention
 
@@ -34,8 +38,8 @@ def weighted_avg_and_std(values, weights):
         data to be averaged
     weights : np.array
         the weight factors corresponding to the data
-        -- both Numpy ndarrays with the same shape.  
-    
+        -- both Numpy ndarrays with the same shape.
+
     Returns
     -------
     Returns the weighted average and its variance as a tuple
@@ -52,7 +56,7 @@ def reorder_pytram_trajs_from_PITCH(trajs):
 
     This is a simple routine, that changes this glitch and
     adds 'time' key to the traj-dictionary
-    
+
     Keys
     ----
     time : float
@@ -60,10 +64,10 @@ def reorder_pytram_trajs_from_PITCH(trajs):
     m    : integer
         Markov state
     b    : float
-        bias 
+        bias
     t    : integer
         thermodynamic state
-        
+
     all above quantities are numpy arrays of the defined type
     """
     for i,traj in enumerate(trajs.trajs):
@@ -76,101 +80,97 @@ def reorder_pytram_trajs_from_PITCH(trajs):
     return trajs
 
 
-def get_weight_factors(dfnm, NWINS, winwfs, tdms, stride=2):
+def read_trajs(dfnm, NWINS=None):
     """
-    Gives weight factors as read from Plumed's Pitch files
+    Reads in Plumed's PitchTdmBias files
 
     Parameters
     ----------
     dfnm : string
-        default filenaming of the PITCH files
+        default filenaming of the PitchTdmBias files
+        these files typically contain several columns
+        with values time, pitch, TDM-orientation, bias
     NWINS : int
         number of simulation windows
-    winwfs : np.array
-        weight factors of the individual simulation windows (e.g. from dTRAM)
-    stride : int
-        multiplication factor for the difference
-        in the pace of the PITCH records and TDM records
+        this number is added at the end of the filename
+         If not given (is None), no number is added at the end
+        and only one filed is read
 
     Returns
     -------
-    wfs : np.array
-        flat array of weight factors (floats)
+    trajs : np.array
+        array of everything in the files provided
     """
     files = []
     for i in range(NWINS):
-        files.append(dfnm+str(i))
+        files.append(dfnm+"."+str(i))
 
     # load the PITCH.* files using pytram's reader
-    print("Loading-in the Pitch trajectories...")
-    trajs = pytram.Reader(files=files)
-    print("Reordering the Pitch trajectories ... ")
-    trajs = reorder_pytram_trajs_from_PITCH(trajs)
-    print("Obtaining biases...")
-    # working in units of kT here!
-    biases = []
-    for win in range(NWINS):
-        # assign bias for each TDM record - prevents the case, where there are less TDMs than biases
-        #for i,rec in enumerate(tdms[win]):  #this was the old way -1
-        ## THIS IS A SOURCE OF ERRORS -- NRECORDS OF TDMS AND BIASES DON'T AGREE -- INVESTIGATE!!!
-        for i in xrange(len(trajs.trajs[win]['b'])/stride):
-            # BEWARE!!
-            # PITCH is recorded at 2x pace than xtc-traj frames
-            biases.append( np.asscalar( trajs.trajs[win]['b'][stride*i] )/kT + winwfs[win] )
+    print("Loading-in the PitchTdm trajectories...")
+    trajs = []
+    for filename in files:
+        trajs.append(np.loadtxt(filename))
 
-    print("Obtaining weight factors and reshaping biases ...")
-    wfs = np.exp( -np.asarray(biases) )   #.reshape( (NWINS,-1) )
-    return wfs
+    return trajs
 
 
-def get_tdms(dfname, NWINS):
+def get_weight_factors(trajs, winwfs):
     """
     Gives weight factors as read from Plumed's Pitch files
-    Specific file-format assumed/expected (not checked!)
 
     Parameters
     ----------
-    dfname : string
-        default filenaming of the TDM-orientation files
-    NWINS : int
-        number of simulation windows
+    trajs : list of arrays
+        obtained from read_trajs
+    winwfs : np.array
+        of windows-weight factors
+        read-in from previous dTRAM or WHAM estimation of FEP
 
     Returns
     -------
-    tdms : np.array
-        flat array of TDM orientations (floats)
+    wfs : list of np.arrays
+        list of arrays of weight factors (floats)
+        with dTRAM or WHAM estimated window weights
     """
-    print("Loading-in TDM orientations from .dat files (specific input assumed)")
-    # load-in tdm-orientations
-    tdms = []
-    for i in range(NWINS):
-        tdm = np.loadtxt(dfname+str(i)+dfext)
-        tdms.append(tdm)
+    print("Obtaining weight factors and reshaping biases ...")
+    wfs = []
+    for i, traj in enumerate(trajs):
+        # the last column should contain biases in kJ/mol - divide by kT,
+        # they are with +sign as they are used for reweighting
+        # back to Boltzmann distribution.
+        # window weights are already in kT units,
+        # they are with -sign as they give
+        # the Boltzmann-weights for individual windows
+        wfs.append(np.exp(traj[:, -1]/kT - winwfs[i]))
+    return wfs
 
-    # get the number of records 
-    nrecords=0
-    for tdm in tdms:
-        nrecords += tdm.shape[0]
-
-    # turn the  TDM-records into a flat np.array    
-    tdms_flat_arr = np.zeros( (nrecords) )
-    i=0
-    for tdm in tdms:
-        for j in tdm[:,1]:
-            tdms_flat_arr[i] = j
-            i+=1
-    
-    return tdms_flat_arr
-
+#%%
 
 if __name__ == '__main__':
     # weight factors of the windows
     print("Loading-in the simulation windows' weight factors...")
     with open("pitch_dTRAM-FEP_windows.pickle","r") as f: winwfs = cPickle.load(f)
     NWINS = winwfs.shape[0]
+    winwfs -= winwfs.min()
 
-    tdms = get_tdms(dfname, NWINS)
+    trajs = read_trajs(dfnm, NWINS)
 
-    wfs = get_weight_factors(dfnm, NWINS, tdms, winwfs, stride=2)
+    wfs = get_weight_factors(trajs, winwfs)
+#%%
 
-    print( "average weighted value and std: \n", weighted_avg_and_std(values=tdms, weights=wfs) )    
+    wfs_flat = wfs[0]
+    for wf in wfs[1:]:
+        wfs_flat = np.append(wfs_flat, wf)
+
+    tdms_flat = trajs[0][:,-2]
+    for traj in trajs[1:]:
+        tdms_flat = np.append(tdms_flat, traj[:,-2])
+
+#%%
+    print "average weighted value and std: \n", weighted_avg_and_std(values=tdms_flat, weights=wfs_flat)
+
+    hist  = np.histogram(tdms_flat, weights=wfs_flat, bins=90, range=(0.0, 90.0))
+    plt.plot(hist[1][:-1], hist[0])
+    plt.show()
+    #plt.plot(tdms_flat)
+    #plt.show()
