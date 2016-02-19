@@ -45,37 +45,6 @@ def weighted_avg_and_std(values, weights):
     return (average, math.sqrt(variance))
 
 
-def reorder_pytram_trajs_from_PITCH(trajs):
-    """
-    PITCH files from Plumed contain data in
-    a different order than assumed in pytram.Reader
-
-    This is a simple routine, that changes this glitch and
-    adds 'time' key to the traj-dictionary
-
-    Keys
-    ----
-    time : float
-        time
-    m    : integer
-        Markov state
-    b    : float
-        bias
-    t    : integer
-        thermodynamic state
-
-    all above quantities are numpy arrays of the defined type
-    """
-    for i,traj in enumerate(trajs.trajs):
-        if traj.has_key('time'):
-            print("this traj was already processed")
-        else:
-            traj['time'] = traj.pop('m')
-            traj['m'] = traj.pop('t')
-            traj['t'] = np.ones(traj['m'].shape, dtype=int) * i
-    return trajs
-
-
 def read_trajs(dfnm, NWINS=None):
     """
     Reads in Plumed's PitchTdmBias files
@@ -90,11 +59,11 @@ def read_trajs(dfnm, NWINS=None):
         number of simulation windows
         this number is added at the end of the filename
          If not given (is None), no number is added at the end
-        and only one filed is read
+        and only one file is read
 
     Returns
     -------
-    trajs : np.array
+    trajs : np.array (or list of arrays)
         array of everything in the files provided
     """
     files = []
@@ -178,6 +147,7 @@ def weight_switch(vals, thres):
 if __name__ == '__main__':
     dfnm = "PitchTdmBias.traj"        # Plumed PITCH filename convention
     max_weight_thres = math.exp(3.0)  # threshold for maximal weight factor (~3kT here)
+
     # weight factors of the windows
     print("Loading-in the simulation windows' weight factors...")
     with open("pitch_dTRAM-FEP_windows.pickle","r") as f: winbiases = cPickle.load(f)
@@ -189,13 +159,16 @@ if __name__ == '__main__':
     wfs = get_weight_factors(trajs, winbiases)
 #%%
 
+    # concatenate weight-factors into a 1-D array
     wfs_flat = wfs[0]
     for wf in wfs[1:]:
         wfs_flat = np.append(wfs_flat, wf)
 
-    tdms_flat = trajs[0][:,-2]
+    # concatenate TDMs into a 1-D array
+    # TDM is stored in the field-index 2 right after time, pitch
+    tdms_flat = trajs[0][:, 2]
     for traj in trajs[1:]:
-        tdms_flat = np.append(tdms_flat, traj[:,-2])
+        tdms_flat = np.append(tdms_flat, traj[:, 2])
 
     # get rid of over-weighted values (that might destroy my statistics)
     wfs_flat = weight_switch(wfs_flat, max_weight_thres)
@@ -211,5 +184,3 @@ if __name__ == '__main__':
     binwidth = hist[1][1] - hist[1][0]
     plt.plot(hist[1][:-1]+binwidth*0.5, hist[0], lw=2.0, color='black')
     plt.savefig("tdm_WHAM-distrib.png", papertype="letter", dpi=300)
-    plt.show()
-

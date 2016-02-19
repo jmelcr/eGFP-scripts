@@ -1,34 +1,115 @@
 #!/usr/bin/env python
 """
  dTRAM analysis on the SPECIFIC REUS simulations of xxeGFPs with 20 umbrella windows at particular points in pitch-space
- this script expects a lot of problem-specific namings and conventions, definitely not flexible, nor general. 
+ this script expects a lot of problem-specific namings and conventions, definitely not flexible, nor general.
 """
 
 
 # coding: utf-8
 
-## Pitch dTRAM/xTRAM analysis
-
-# import everything necessary and prepare constants, variables...
-
-# In[1]:
-
-#get_ipython().magic(u'pylab inline')
-from pytram import TRAMData, dtram, xtram # this is the dTRAM API function
+from pytram import TRAMData, dtram # this is the dTRAM API function
 import pytram
 import numpy as np
+import scipy
 import matplotlib.pyplot as plt
 import cPickle
-#import os
-#os.chdir('/home/pepa/eGFP_sensors/wilCleGFP/wil_opls_berger/v-0.1_reus')
 
 kT = 2.5775  # kJ/mol*310K
 NBINS = 90
 
-print """dTRAM analysing script of eGFP-like REUS simulations with 
+print """dTRAM analysing script of eGFP-like REUS simulations with
 20 umbrella windows at particular hard-coded positions.
 the hard-coded tolerance for energy factors is e-6
       """
+
+#%%
+
+def read_trajs(dfnm, NWINS=None):
+    """
+    Reads in Plumed's Pitch files
+
+    Parameters
+    ----------
+    dfnm : string
+        default filenaming of the Pitch files
+        these files typically contain several columns
+        with values time, pitch, and bias
+    NWINS : int
+        number of simulation windows
+        this number is added at the end of the filename
+         If not given (is None), no number is added at the end
+        and only one file is read
+
+    Returns
+    -------
+    trajs : list of dictionaries containing arrays
+        with the key convention of pytram
+    """
+    def discretize(data, binwidth=1.0, offset=0.0):
+        """
+        turns data into integers, i.e.
+        discretizes data based on the offset and bin width
+
+        Parameters
+        ----------
+        data : np.array
+            data to be discretized
+        binwidth : float
+            width of one bin in the discretization scheme
+        offset : float
+            starting value for the discretization scheme
+        """
+        if offset != 0.0:
+            data -= offset
+        if binwidth != 1.0:
+            data /= binwidth
+        return data.astype(int)
+
+    files = []
+    for i in range(NWINS):
+        files.append(dfnm+"."+str(i))
+
+    # load the PITCH.* files using pytram's reader
+    print("Loading-in the Pitch trajectories...")
+    trajs = []
+    for filename in files:
+        tmpdict = {}
+        tmpdict['time'], tmpdict['pitch'], tmpdict['b'] = np.hsplit(np.loadtxt(filename), 3)  # should contain exactly 3 columns
+        tmpdict['m'] = discretize(tmpdict['pitch'])
+        trajs.append(tmpdict)
+    return trajs
+
+
+def reorder_pytram_trajs_from_PITCH(trajs):
+    """
+    PITCH files from Plumed contain data in
+    a different order than assumed in pytram.Reader
+
+    This is a simple routine, that changes this glitch and
+    adds 'time' key to the traj-dictionary
+
+    Keys
+    ----
+    time : float
+        time
+    m    : integer
+        Markov state
+    b    : float
+        bias
+    t    : integer
+        thermodynamic state
+
+    all above quantities are numpy arrays of the defined type
+    """
+    for i, traj in enumerate(trajs.trajs):
+        if 'time' in traj:
+            print("this traj was already processed")
+        else:
+            traj['time'] = traj.pop('m')
+            traj['m'] = traj.pop('t')
+            traj['t'] = np.ones(traj['m'].shape, dtype=int) * i
+    return trajs
+
 
 # In[2]:
 
@@ -59,88 +140,67 @@ for K in xrange( NWINS ):
 
 
 # In[3]:
-
-files = []
-dfnm = "PITCH."
-for i in range(NWINS):
-   files.append(dfnm+str(i))
-    
-
-
-# load the PITCH.* files using pytram's reader
-
-# In[4]:
-
-print "Reading-in trajectories ... "
-
-trajs = pytram.Reader(files=files)
-
-
-# PITCH files don't have the right format for pytram - corrections required ...
-
-# Now, trajs should contain list of dictionaries with Markov state 'm' and thermodyn. state 't', 
-# but they contain t,m,b.
-# m - time, 
-# t - Markov state, 
-# b - bias factor in kJ/mol
-
-# In[5]:
-
-# rename and reorder and fill the trajectory-dictionaries
-for i,traj in enumerate(trajs.trajs):
-    if traj.has_key('time'):
-        print "this traj was already processed"
-    else:
-       traj['time'] = traj.pop('m')
-       traj['m'] = traj.pop('t')
-       traj['t'] = np.ones(traj['m'].shape, dtype=int) * i
-
-
-# Trajectories "trajs" should now be in the right format for TRAMdata processing and then to be thrown into the DTRAM procedure: m - Markov state, t - thermodynamic state (umbrella), b - bias (always was) and there's a new key 'time'
-
-# prepare data for dTRAM procedure:
-
-# In[6]:
+dfnm = "PITCH"
+trajs = read_trajs(dfnm,NWINS)
 
 print "Preparing data for dTRAM ... "
 
-dtramdata = TRAMData(trajs.trajs, b_K_i=b_K_i_joe)
-#xtramdata = TRAMData(trajs.trajs, b_K_i=b_K_i_joe, kT_K=np.ones(NWINS)*kT, kT_target=0)
+dtramdata = TRAMData(trajs, b_K_i=b_K_i_joe)
 
 
-# run dTRAM/xTRAM iterative solver:
 
 # In[43]:
 
 # Tolerance and iterations are hardcoded
 
-print "Running dTRAM for 1000 iters with ftol e-6" 
+print "Running dTRAM for 1000 iters with ftol e-6"
 
 nruns=0
 
-try: 
-    nruns+=1
-    dtram_obj_joe = dtram( dtramdata, 1, maxiter=1000, ftol=1.0E-6, verbose=False )
-except: 
+try:
+    #nruns+=1
+    dtram_obj_joe = dtram( dtramdata, 1, maxiter=1, ftol=1.0E-6, verbose=False )
+except:
     print "Not converged in "+str(nruns)+"k steps. (or some other error)"
 #xtram_obj_joe = xtram( xtramdata, 1, maxiter=1, ftol=1.0E-2, verbose=True )
+
+
+#%%
+wham_fep_fname = "wham_fep_histo.dat"
+try:
+    wham_fep = np.loadtxt(wham_fep_fname)
+except:
+    print """File "+wham_fep_fname+" not accesible, or something else...
+    using implicit zeros as the initial values"""
+# set a better initial guess of f_i from WHAM:
+# this is very DIRTY! f_i is meant to be private!
+# FEP in kJ/mol is in the 2nd column (index 1)
+dtram_obj_joe._f_i = wham_fep[:, 1]/kT
+# apply the norm used in the .sc_iteration method of dtram_obj:
+dtram_obj_joe._f_i += scipy.misc.logsumexp(np.append(-dtram_obj_joe._f_i, dtramdata.n_markov_states))
+
+# run dTRAM/xTRAM iterative solver:
 
 
 # In[45]:
 
 converged = False
+nruns_max = 50
 
 while not converged:
-   try: 
+   try:
        print "Running another 1k steps ..."
        nruns+=1
+       if nruns > nruns_max:
+           print """BEWARE: Did not converge within 50k iterations, this is weird, ending. \nBEWARE: generated results are based on unconverged data! """
+           break
        dtram_obj_joe.sc_iteration(maxiter=1000)
    except:
        print "Not converged in "+str(nruns)+"k steps. ",
    else:
        print "Converged within "+str(nruns)+"k steps."
        converged = True
-    
+
 #xtram_obj_joe.sc_iteration(maxiter=4, verbose=True)
 
 
@@ -164,7 +224,7 @@ with open("pitch_dTRAM-FEP.dat","w") as f:
     for i,c in enumerate(cnz):
        line = str(c)+"   "+str(fep_dtram_shift[i])+"\n"
        f.write( line )
-    
+
 
 
 # In[46]:
@@ -172,7 +232,7 @@ with open("pitch_dTRAM-FEP.dat","w") as f:
 print "Plotting dTRAM, and WHAM data if present ... "
 
 # Load the result from WHAM: (generated with the same set and with the same converg. criterion 1.0E-6, 90 bins ..)
-try: 
+try:
     wham_data = np.loadtxt("wham_fep_histo.dat")
     cnz_wham = wham_data[:,0]
     fep_wham = wham_data[:,1]/kT # scale by kT
@@ -191,8 +251,7 @@ plt.ylabel( r"$U(x)$ / kT", fontsize=12 )
 
 plt.savefig("pitch_fep_dTRAM_WHAM.png", papertype="letter", dpi=300)
 
+#%%
 
-# In[ ]:
-
-
-
+plt.plot(dtram_obj_joe.f_i, lw=2)
+plt.plot(wham_fep[:,1]/kT)
