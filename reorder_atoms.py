@@ -7,7 +7,6 @@ Originally meant to reorder POPC atoms from CHARMM-GUI to Slipids ordering
 """
 
 import pmx
-import numpy as np
 
 
 class MoleculesCompared:
@@ -75,7 +74,7 @@ class MoleculesCompared:
             # sort atoms in the current molecule mol
             sorted_list_atoms = sorted(mol.atoms, key=self.get_eq_at_index)
             # turn the list of atoms into a pmx.Molecule instance
-            sorted_mol = pmx.molecule.Molecule(resname=self.resname)
+            sorted_mol = pmx.molecule.Molecule(resname=mol.resname,id=mol.id)
             for atom in sorted_list_atoms:
                 sorted_mol.append(atom)
             # append the sorted_mol (pmx.Molecule instance)
@@ -85,17 +84,37 @@ class MoleculesCompared:
 
 #%%
 
-charmm = pmx.Model(filename="step5_charmm2gmx.pdb")
-slipids = pmx.Model(filename="confout_memb_slipids.gro")
+if __name__ == '__main__':
 
-c = charmm.residue(1)
-s = slipids.residue(1)
+    # load-in the files
+    charmm = pmx.Model(filename="step5_charmm2gmx.pdb")
+    slipids = pmx.Model(filename="confout_memb_slipids.gro")
 
-#%%
+    #%%
 
-refsorted = MoleculesCompared([s,c]).get_ref_sorted_atoms()
+    # set the reference POPC residue as the 1st item in the list-of-mols
+    list_POPC_mols = [slipids.residue(1)]
 
-#%%
+    # add all other POPC molecules to-be-sorted to the list
+    for mol in charmm.residues:
+        if mol.resname == 'POPC':
+            list_POPC_mols.append(mol)
 
-for mol in refsorted:
-    mol.renumber_atoms()
+    #%%
+
+    # sort the molecules! -- get the list of reference-sorted molecules
+    refsorted = MoleculesCompared(list_POPC_mols).get_ref_sorted_atoms()
+
+    # renumber atoms
+    for mol in refsorted:
+        mol.renumber_atoms()
+
+    #%%
+
+    # ref-sorted residues/molecules keep the original id (resid)
+    # --> can replace the original residues easily
+    for mol in refsorted[1:]:
+        charmm.replace_residue(charmm.residue(mol.id), mol)
+
+    # write it out in PDB (or GRO) format
+    charmm.write("reordered_Charmm-Slipids_POPC_memb.pdb")
