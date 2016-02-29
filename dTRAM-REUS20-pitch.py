@@ -72,10 +72,11 @@ def read_trajs(dfnm, NWINS=None):
     # load the PITCH.* files using pytram's reader
     print("Loading-in the Pitch trajectories...")
     trajs = []
-    for filename in files:
+    for i, filename in enumerate(files):
         tmpdict = {}
         tmpdict['time'], tmpdict['pitch'], tmpdict['b'] = np.hsplit(np.loadtxt(filename), 3)  # should contain exactly 3 columns
         tmpdict['m'] = discretize(tmpdict['pitch'])
+        tmpdict['t'] = np.ones(tmpdict['m'].shape, dtype=int) * i
         trajs.append(tmpdict)
     return trajs
 
@@ -124,7 +125,7 @@ umb_pos = [ float(x) for x in umb_pos_str.split() ]
 NWINS = len(umb_pos)
 
 # umbrella = k/2 * dx**2   ; k=kappa as used in PLUMED
-KAPPAkjm = 0.5
+KAPPAkjm = 0.1
 KAPPAkT = KAPPAkjm/kT
 
 # harmonic bias potential
@@ -250,8 +251,3 @@ plt.xlabel( r"$x$ / deg", fontsize=12 )
 plt.ylabel( r"$U(x)$ / kT", fontsize=12 )
 
 plt.savefig("pitch_fep_dTRAM_WHAM.png", papertype="letter", dpi=300)
-
-#%%
-
-plt.plot(dtram_obj_joe.f_i, lw=2)
-plt.plot(wham_fep[:,1]/kT)
