@@ -23,6 +23,37 @@ the hard-coded tolerance for energy factors is e-6
       """
 
 #%%
+class SimFiles:
+    """
+    Class for storing meta-data about simulation files
+    e.g. filename, ubrella-position etc.
+
+    the expected file-format is the same as for Grossfields WHAM code
+
+    See the code for further details
+    """
+    def __init__(self, fname):
+        if not isinstance(fname, str):
+            raise RuntimeError, "provided filename is not a string!"
+        self.fname = fname
+        try:
+            metadatafile = open(self.fname, "r")
+            lines = metadatafile.readlines()
+            metadatafile.close()
+        except:
+            raise IOError, "Can't open/close/read the provided file!"
+
+        # list of simulation meta-data dictionaries
+        self.sims = []
+        for line in lines:
+            split_line = line.split()
+            fname  = split_line.pop(0)
+            numpad = int(split_line.pop(2))
+            x_0, kappa, temperature = [float(i) for i in split_line]
+            tmpdict = {'fname': fname, 'numpad':numpad, 'x0': x_0, 'kappa': kappa, 'temperature': temperature}
+            self.sims.append(tmpdict)
+
+#%%
 
 def read_trajs(dfnm, NWINS=None):
     """
@@ -112,6 +143,10 @@ def reorder_pytram_trajs_from_PITCH(trajs):
 
 
 # In[2]:
+m = SimFiles("wham_meta.data")
+m.sims
+
+#%%
 
 print "Preparing ... "
 
@@ -253,5 +288,4 @@ plt.savefig("pitch_fep_dTRAM_WHAM.png", papertype="letter", dpi=300)
 
 #%%
 
-plt.plot(dtram_obj_joe.f_i, lw=2)
-plt.plot(wham_fep[:,1]/kT)
+m = SimFiles("wham_meta.data")
