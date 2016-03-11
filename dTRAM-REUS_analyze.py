@@ -24,6 +24,7 @@ NBINS = 90
 lbound = 0.5
 ubound = 89.5
 nruns_max = 50
+lag_time = 100
 f_toler_dtram = 1.0E-6
 wham_fep_fname = "wham_fep_histo.dat"
 wham_metadata_fname = "wham_meta.data"
@@ -56,15 +57,18 @@ class SimFiles:
         # list of simulation meta-data dictionaries
         self.sims = []
         for line in lines:
-            split_line = line.split()
-            fname  = split_line.pop(0)
-            numpad = int(split_line.pop(2))
-            x_0, kappa, temperature = [float(i) for i in split_line]
-            # kappa is twice that large for Grossfields WHAM code than
-            # in the definition here + convert it to kT units from kJ/mol
-            kappa /= 2.0*k_b*temperature
-            tmpdict = {'fname': fname, 'numpad':numpad, 'x0': x_0, 'kappa': kappa, 'temperature': temperature}
-            self.sims.append(tmpdict)
+            if not ( line.startswith("#") and line.strip() ) :
+                split_line = line.split()
+                fname  = split_line.pop(0)
+                numpad = int(split_line.pop(2))
+                x_0, kappa, temperature = [float(i) for i in split_line]
+                # kappa is twice that large for Grossfields WHAM code than
+                # in the definition here + convert it to kT units from kJ/mol
+                kappa /= 2.0*k_b*temperature
+                tmpdict = {'fname': fname, 'numpad':numpad, 'x0': x_0, 'kappa': kappa, 'temperature': temperature}
+                self.sims.append(tmpdict)
+            else:
+                self.nsims -= 1
 
 
     def read_trajs(self):
@@ -135,6 +139,9 @@ if __name__ == "__main__":
 
     # this is BAD! -- generalize!
     # discretization centres assuming bin0=(0:1), bin1=(1:2) ...
+    #lbound = 80
+    #ubound = 180
+    #NBINS = ubound - lbound
     gridpoints = np.linspace( lbound, ubound, NBINS )
 
     trajs = metadata.read_trajs()
@@ -142,7 +149,7 @@ if __name__ == "__main__":
     dtramdata = TRAMData(trajs, b_K_i=metadata.gen_harmonic_bias_mtx(gridpoints=gridpoints))
 
     try:
-        dtram_obj_joe = dtram( dtramdata, 1, maxiter=1, ftol=f_toler_dtram, verbose=False )
+        dtram_obj_joe = dtram( dtramdata, lag=lag_time, maxiter=1, ftol=f_toler_dtram, verbose=False )
     except pytram.ExpressionError:
         raise pytram.ExpressionError, "Input was faulty, ending..."
     except pytram.NotConvergedWarning:
