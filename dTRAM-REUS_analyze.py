@@ -21,6 +21,7 @@ import cPickle
 k_b = 0.0083144621  #kJ/Mol*K
 kT = 2.5775  # kJ/mol*310K
 NBINS = 90
+bin_width = 1.0
 lbound = 0.5
 ubound = 89.5
 nruns_max = 50
@@ -35,7 +36,7 @@ class SimFiles:
     """
     Class for storing meta-data about simulation files
     e.g. filename, ubrella-position etc.
-    and readin-in and manipulation simulation data
+    and reading-in and manipulating simulation data
 
     the expected file-format is the same as for Grossfields WHAM code
 
@@ -71,21 +72,29 @@ class SimFiles:
                 self.nsims -= 1
 
 
-    def read_trajs(self):
+    def read_trajs(self, binwidth=1.0):
         """
         Reads in Plumed's Pitch files
+
+        File format:
+        ------------
+        3 columns : floats
+            Time -- PITCH -- bias
+            crashes or unexpected behaviour if different format (e.g. more cols)
 
         Returns
         -------
         trajs : list of dictionaries containing arrays
             with the key convention of pytram
+            dict-key 'm' -- Markov state -- 0-based indexing
 
         TODO:
         -----
         dTRAM fails if the trajectories contain unvisited states
+        change binwidth into an attribute -- would be worth recording!!
           -- not checked here
         """
-        def discretize(data, binwidth=1.0, offset=0.0):
+        def discretize(data, offset=0.0):
             """
             turns data into integers, i.e.
             discretizes data based on the offset and bin width
@@ -96,13 +105,13 @@ class SimFiles:
             ----------
             data : np.array
                 data to be discretized
-            binwidth : float
-                width of one bin in the discretization scheme
             offset : float
                 starting value for the discretization scheme
             """
             if offset != 0.0:
                 data -= offset
+            # binwidth variable taken from the
+            # enclosing scope (at definition time) -- closure
             if binwidth != 1.0:
                 data /= binwidth
             return data.astype(int)
@@ -112,17 +121,18 @@ class SimFiles:
         for i, sim in enumerate(self.sims):
             filename = sim['fname']
             tmpdict = {}
-            tmpdict['time'], tmpdict['pitch'], tmpdict['b'] = np.hsplit(np.loadtxt(filename), 3)  # should contain exactly 3 columns
-            tmpdict['m'] = discretize(tmpdict['pitch'])
+            tmpdict['time'], tmpdict['x'], tmpdict['b'] = np.hsplit(np.loadtxt(filename), 3)  # should contain exactly 3 columns
+            tmpdict['m'] = discretize(tmpdict['x'])
             # find the smallest state-no
             if smallest > tmpdict['m'].min() or smallest == None :
                 smallest = tmpdict['m'].min()
             tmpdict['t'] = np.ones(tmpdict['m'].shape, dtype=int) * i
             trajs.append(tmpdict)
 
-        #shift the trajs by the smallest state-no (smallest var)
+        # shift the trajs by the smallest state-no (smallest var)
         for traj in trajs:
             traj['m'] -= smallest
+
         return trajs
 
 
@@ -140,6 +150,117 @@ class SimFiles:
         return b_K_i
 
 
+def SimData(SimFiles):
+    """
+    SubClass of SimFiles for storing trajectories-data and
+    meta-data about simulation files
+    e.g. filename, ubrella-position etc.
+    and readsing-in and manipulating simulation data
+
+    the expected file-format is the same as for Grossfields WHAM code
+
+    See the code for further details
+    """
+    def __init__(self, fname):
+        SimFiles.__init__(self, fname, bin_width)
+        self.trajs = self.read_trajs(self, bin_width)
+
+    def remove_unvisited(self):
+        """
+        Returns the same list of trajectories with
+        reindexed Markov states,
+        so that there are no unvisited states
+
+        Parameters:
+        -----------
+        trajs : list
+            list of trajectories (dictionaries in pytram-format)
+        """
+        # store the indices in an attribute
+        self.unvisited_states = self.get_unvisited_states()
+        # shift the Markov-states indices
+        self.shift_m_indices()
+
+    def shift_m_indices(self):
+        """
+        Shifts Markov-state indices IN-PLACE so that there are no
+        unvisited states (stored in attribute for possible reversal)
+        and the state-index series is continuous (0,1,2,3,4...)
+        """
+        for i in self.unvisited_states:
+            for traj in trajs:
+                # select all states with a higher index than i
+                sel = (traj['m'] > i)
+                # reduce their index-number by 1
+                traj['m'][sel] -= 1
+
+    def get_trajs_minmax(self, key='x'):
+        """
+        Returns the min/max values of key='x' (some coordinate, e.g. pitch)
+        from list of trajs (each list-item is a dictionary -- pyTram format)
+        """
+        # initialize with the first trajectory
+        traj = self.trajs[0]
+        minim_all, maxim_all = get_minmax(traj[key])
+        # go through the rest trajs
+        for traj in self.trajs[1:]:
+            minim, maxim = get_minmax(traj[key])
+            if minim < minim_all:
+                minim_all = minim
+            if maxim > maxim_all:
+                maxim_all = maxim
+
+        return (minim_all, maxim_all)
+
+    def get_unvisited_states(self):
+        """
+        Returns the Markov-indices of unvisited states (sorted) in a list
+        Assuming 0-alignment of bins
+        e.g. bin_width=1.0 gives bins (0.0:1.0), (1.0,2.0), ...
+        """
+        # find min/max of Markov state indices
+        minim, maxim = self.get_trajs_minmax(key='m')
+
+        # find the unvisited states and put them into list
+        if minim > 0:
+            unvisited_states = range(minim)
+        else:
+            unvisited_states = []
+
+        for j in range(minim, maxim+1):
+            visited = False
+            for traj in self.trajs:
+                if (traj['m'] == j ).any():
+                    visited = True
+                    break
+            if not visited:
+                unvisited_states.append(j)
+
+        return unvisited_states.sort()
+
+    def get_avg_bias_mtx(self):
+        """
+        Return the b_K_i matrix (required for pytram)
+        obtained by averaging the biasfactors from simulation data
+        (does not require any assumption on the potential shape and its params)
+        """
+        print "TODO!!!"
+
+#%%
+
+def get_minmax(data):
+    """ Returns (minim, maxim) tuple of data (np.array) """
+    minim = data.min()
+    maxim = data.max()
+    return (minim, maxim)
+
+def get_bin_centre(value, bin_width):
+    """
+    Returns centre (i.e. gridpoint) of
+    the bin the value belongs to
+    Gridpoints/bins assumed 0-aligned
+    """
+    return (int(value/bin_width)+0.5)*bin_width
 
 #%%
 
@@ -147,14 +268,16 @@ if __name__ == "__main__":
     #read-in the simulations' metadata in the Grossfield's WHAM format
     metadata = SimFiles(wham_metadata_fname)
 
-    # this is BAD! -- generalize!
-    # discretization centres assuming bin0=(0:1), bin1=(1:2) ...
-    #lbound = 80
-    #ubound = 180
-    #NBINS = ubound - lbound
-    gridpoints = np.linspace( lbound, ubound, NBINS )
+    trajs = metadata.read_trajs(binwidth=bin_width)
 
-    trajs = metadata.read_trajs()
+    # get lower/upper bounds of the trajectories (all data)
+    (lbound, ubound) = get_trajs_minmax(trajs)
+    # how many bins do we need?
+    nbins = int((ubound-lbound) / bin_width) + 1
+    # generate gripoints aligned with "absolute 0"
+    gridpoints = np.linspace( get_bin_centre(lbound), get_bin_centre(ubound), nbins )
+
+    trajs = remove_unvisited(trajs)
 
     dtramdata = TRAMData(trajs, b_K_i=metadata.gen_harmonic_bias_mtx(gridpoints=gridpoints))
 
