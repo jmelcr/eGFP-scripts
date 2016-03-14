@@ -150,7 +150,7 @@ class SimFiles:
         return b_K_i
 
 
-def SimData(SimFiles):
+class SimData(SimFiles):
     """
     SubClass of SimFiles for storing trajectories-data and
     meta-data about simulation files
@@ -161,9 +161,9 @@ def SimData(SimFiles):
 
     See the code for further details
     """
-    def __init__(self, fname):
-        SimFiles.__init__(self, fname, bin_width)
-        self.trajs = self.read_trajs(self, bin_width)
+    def __init__(self, fname, bin_width):
+        SimFiles.__init__(self, fname)
+        self.trajs = self.read_trajs(binwidth=bin_width)
 
     def remove_unvisited(self):
         """
@@ -187,12 +187,17 @@ def SimData(SimFiles):
         unvisited states (stored in attribute for possible reversal)
         and the state-index series is continuous (0,1,2,3,4...)
         """
-        for i in self.unvisited_states:
-            for traj in trajs:
-                # select all states with a higher index than i
-                sel = (traj['m'] > i)
-                # reduce their index-number by 1
-                traj['m'][sel] -= 1
+        if not isinstance(self.unvisited_states, list):
+            print "Did you already look for unvisited states?"
+        elif len(self.unvisited_states) > 0:
+            for i in self.unvisited_states:
+                for traj in trajs:
+                    # select all states with a higher index than i
+                    sel = (traj['m'] > i)
+                    # reduce their index-number by 1
+                    traj['m'][sel] -= 1
+        else:
+            print "shift_m_indices: Nothing to shift/remove."
 
     def get_trajs_minmax(self, key='x'):
         """
@@ -235,8 +240,9 @@ def SimData(SimFiles):
                     break
             if not visited:
                 unvisited_states.append(j)
-
-        return unvisited_states.sort()
+        if len(unvisited_states) > 0:
+            unvisited_states.sort()
+        return unvisited_states
 
     def get_avg_bias_mtx(self):
         """
@@ -266,20 +272,26 @@ def get_bin_centre(value, bin_width):
 
 if __name__ == "__main__":
     #read-in the simulations' metadata in the Grossfield's WHAM format
-    metadata = SimFiles(wham_metadata_fname)
-
-    trajs = metadata.read_trajs(binwidth=bin_width)
+    # and the trajectories in the PLUMED's format
+    sim_data = SimData(wham_metadata_fname, bin_width)
+    sim_data.remove_unvisited()
 
     # get lower/upper bounds of the trajectories (all data)
-    (lbound, ubound) = get_trajs_minmax(trajs)
+    lbound, ubound = sim_data.get_trajs_minmax()
     # how many bins do we need?
-    nbins = int((ubound-lbound) / bin_width) + 1
+    nbins = int(abs(ubound-lbound) / bin_width) + 2  # +2 for edges
     # generate gripoints aligned with "absolute 0"
-    gridpoints = np.linspace( get_bin_centre(lbound), get_bin_centre(ubound), nbins )
+    gridpoints = np.linspace( get_bin_centre(lbound, bin_width), get_bin_centre(ubound, bin_width), nbins )
+    if sim_data.unvisited_states > 0:
+        sel = np.array(gridpoints, dtype=bool, copy=False)
+        sel[:] = True
+        sel[sim_data.unvisited_states] = False
+        gridpoints = gridpoints[sel]
 
-    trajs = remove_unvisited(trajs)
 
-    dtramdata = TRAMData(trajs, b_K_i=metadata.gen_harmonic_bias_mtx(gridpoints=gridpoints))
+#%%
+
+    dtramdata = TRAMData(sim_data.trajs, b_K_i=sim_data.gen_harmonic_bias_mtx(gridpoints=gridpoints))
 
     try:
         dtram_obj_joe = dtram( dtramdata, lag=lag_time, maxiter=1, ftol=f_toler_dtram, verbose=False )
@@ -299,7 +311,7 @@ if __name__ == "__main__":
         using implicit zeros as the initial values"""
     # this is very DIRTY! f_i is meant to be private!
     # FEP in kJ/mol is in the 2nd column (index 1)
-    dtram_obj_joe._f_i = wham_fep[:, 1] / (k_b*metadata.sims[0]['temperature'])
+    dtram_obj_joe._f_i = wham_fep[:, 1] / (k_b*sim_data.sims[0]['temperature'])
     # apply the norm used in the .sc_iteration method of dtram_obj:
     dtram_obj_joe._f_i += scipy.misc.logsumexp(np.append(-dtram_obj_joe._f_i, dtramdata.n_markov_states))
 
