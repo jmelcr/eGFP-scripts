@@ -89,6 +89,8 @@ class SimFiles:
             """
             turns data into integers, i.e.
             discretizes data based on the offset and bin width
+            Discretized data are 0-based indices
+            (shifted with local var smallest)
 
             Parameters
             ----------
@@ -105,14 +107,22 @@ class SimFiles:
                 data /= binwidth
             return data.astype(int)
 
+        smallest = None
         trajs = []
         for i, sim in enumerate(self.sims):
             filename = sim['fname']
             tmpdict = {}
             tmpdict['time'], tmpdict['pitch'], tmpdict['b'] = np.hsplit(np.loadtxt(filename), 3)  # should contain exactly 3 columns
             tmpdict['m'] = discretize(tmpdict['pitch'])
+            # find the smallest state-no
+            if smallest > tmpdict['m'].min() or smallest == None :
+                smallest = tmpdict['m'].min()
             tmpdict['t'] = np.ones(tmpdict['m'].shape, dtype=int) * i
             trajs.append(tmpdict)
+
+        #shift the trajs by the smallest state-no (smallest var)
+        for traj in trajs:
+            traj['m'] -= smallest
         return trajs
 
 
