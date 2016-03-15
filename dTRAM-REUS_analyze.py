@@ -1,11 +1,16 @@
 #!/usr/bin/env python
 """
  dTRAM analysis on the SPECIFIC REUS simulations of xxeGFPs
- this script expects a lot of problem-specific namings and
- conventions, definitely not flexible, nor general.
+ Beware: this script might still be a bit too specific to this task.
 
- TODO: can guess gridpoints from the visited states
-       should be non-visited state proof (program crashes if there's one)
+ ------------------------------------------------------------
+ Made by Joe,  Last edit 2016/03/15
+------------------------------------------------------------
+ input: Plumed's pitch files,
+        MetaData in Grossfield's-WHAM format
+ output: FEP (pickled, textfile and plot)
+
+--------------------------------------------------------
 """
 
 
@@ -17,18 +22,9 @@ import numpy as np
 import scipy
 import matplotlib.pyplot as plt
 import cPickle
+from optparse import OptionParser
 
 k_b = 0.0083144621  #kJ/Mol*K
-kT = 2.5775  # kJ/mol*310K
-NBINS = 90
-bin_width = 1.0
-lbound = 0.5
-ubound = 89.5
-nruns_max = 50
-lag_time = 100
-f_toler_dtram = 1.0E-6
-wham_fep_fname = "wham_fep_histo.dat"
-wham_metadata_fname = "wham_meta.data"
 
 
 #%%
@@ -66,13 +62,15 @@ class SimFiles:
                 # kappa is twice that large for Grossfields WHAM code than
                 # in the definition here + convert it to kT units from kJ/mol
                 kappa /= 2.0*k_b*temperature
-                tmpdict = {'fname': fname, 'numpad':numpad, 'x0': x_0, 'kappa': kappa, 'temperature': temperature}
+                tmpdict = {'fname': fname, 'numpad': numpad,
+                           'x0': x_0, 'kappa': kappa,
+                           'temperature': temperature}
                 self.sims.append(tmpdict)
             else:
                 self.nsims -= 1
 
 
-    def read_trajs(self, binwidth=1.0):
+    def read_trajs(self, binwidth):
         """
         Reads in Plumed's Pitch files
 
@@ -87,14 +85,8 @@ class SimFiles:
         trajs : list of dictionaries containing arrays
             with the key convention of pytram
             dict-key 'm' -- Markov state -- 0-based indexing
-
-        TODO:
-        -----
-        dTRAM fails if the trajectories contain unvisited states
-        change binwidth into an attribute -- would be worth recording!!
-          -- not checked here
         """
-        def discretize(data, offset=0.0):
+        def discretize(in_data, offset=0.0):
             """
             turns data into integers, i.e.
             discretizes data based on the offset and bin width
@@ -108,6 +100,7 @@ class SimFiles:
             offset : float
                 starting value for the discretization scheme
             """
+            data = np.copy(in_data)
             if offset != 0.0:
                 data -= offset
             # binwidth variable taken from the
@@ -124,7 +117,7 @@ class SimFiles:
             tmpdict['time'], tmpdict['x'], tmpdict['b'] = np.hsplit(np.loadtxt(filename), 3)  # should contain exactly 3 columns
             tmpdict['m'] = discretize(tmpdict['x'])
             # find the smallest state-no
-            if smallest > tmpdict['m'].min() or smallest == None :
+            if  smallest == None or smallest > tmpdict['m'].min():
                 smallest = tmpdict['m'].min()
             tmpdict['t'] = np.ones(tmpdict['m'].shape, dtype=int) * i
             trajs.append(tmpdict)
@@ -163,7 +156,14 @@ class SimData(SimFiles):
     """
     def __init__(self, fname, bin_width):
         SimFiles.__init__(self, fname)
-        self.trajs = self.read_trajs(binwidth=bin_width)
+        if isinstance(bin_width, float):
+            self.bin_width = bin_width
+            self.trajs = self.read_trajs(binwidth=self.bin_width)
+            self.remove_unvisited()
+            self.gridpoints = self.get_gridpoints()
+        else:
+            print "Incorrect bin_width provided: ", bin_width
+            raise RuntimeError, "Terminating with exception ..."
 
     def remove_unvisited(self):
         """
@@ -190,8 +190,10 @@ class SimData(SimFiles):
         if not isinstance(self.unvisited_states, list):
             print "Did you already look for unvisited states?"
         elif len(self.unvisited_states) > 0:
+            # sort unvisited states descending -> req'd for subseq. shifting
+            self.unvisited_states.sort(reverse=True)
             for i in self.unvisited_states:
-                for traj in trajs:
+                for traj in self.trajs:
                     # select all states with a higher index than i
                     sel = (traj['m'] > i)
                     # reduce their index-number by 1
@@ -232,7 +234,7 @@ class SimData(SimFiles):
         else:
             unvisited_states = []
 
-        for j in range(minim, maxim+1):
+        for j in range(minim, maxim):
             visited = False
             for traj in self.trajs:
                 if (traj['m'] == j ).any():
@@ -252,6 +254,30 @@ class SimData(SimFiles):
         """
         print "TODO!!!"
 
+    def get_gridpoints(self):
+        """
+        Returns 0-aligned gridpoints according to the bin_width and
+        min/max of all trajectories
+        """
+        # get lower/upper bounds of the trajectories (all data)
+        bounds_minmax = self.get_trajs_minmax()
+        # bounds will contain the min/max gridpoints/bin-centres
+        # instead of absolute real min/max
+        bounds = list(bounds_minmax)
+        for i, bound in enumerate(bounds):
+            bounds[i] = get_bin_centre(bound, self.bin_width)
+        # how many bins do we need then?
+        self.nbins = int(abs(bounds[1]-bounds[0]) / self.bin_width) + 1  # +1 for the right edge
+        # generate gripoints aligned with "absolute 0"
+        gridpoints = np.linspace( bounds[0], bounds[1], self.nbins )
+        if self.unvisited_states > 0:
+            sel = np.array(gridpoints, dtype=bool, copy=False)
+            sel[:] = True
+            sel[self.unvisited_states] = False
+            gridpoints = gridpoints[sel]
+
+        return gridpoints
+
 #%%
 
 def get_minmax(data):
@@ -268,55 +294,63 @@ def get_bin_centre(value, bin_width):
     """
     return (int(value/bin_width)+0.5)*bin_width
 
+
+def get_init_f_i_from_wham(wham_fep_fname, sim_data):
+    """
+    Reads in the WHAM-guess of f_i factors
+    and returns them as a new guess for assignment to dTRAM obj attribute ._f_i
+    -- sets a better initial guess of f_i from WHAM,
+    BUT: the gridpoints don't have to necessarily agree!
+    """
+    try:
+        wham_fep = np.loadtxt(wham_fep_fname)
+        # this is very DIRTY! f_i is meant to be private!
+        # FEP in kJ/mol is in the 2nd column (index 1)
+        new_f_i = wham_fep[:, 1] / (k_b*sim_data.sims[0]['temperature'])
+        # apply the norm used in the .sc_iteration method of dtram_obj:
+        new_f_i += scipy.misc.logsumexp(np.append(-new_f_i, sim_data. len(new_f_i)))
+    except:
+        print """File "+wham_fep_fname+" not accesible, or something else...
+        using implicit zeros as the initial values"""
+
+
 #%%
 
 if __name__ == "__main__":
+    # help message is automatically provided
+    # type=string, action=store is default
+    parser = OptionParser()
+    parser.add_option('-m', '--metafile', dest='wham_metadata_fname', help='wham metadata file name', default="wham_meta.data")
+    parser.add_option('-w', '--whamfep', dest='wham_fep_fname', help='wham FEP file name', default="wham_fep_histo.dat")
+    parser.add_option('-b', '--binw', dest='bin_width', help='bin width', default=1.0, type=float)
+    parser.add_option('-i', '--niter', dest='nruns_max', help='no. iter*1k (=1run)', default=100, type=int)
+    parser.add_option('-l', '--lag', dest='lag_time', help='lag time (in units of frame-rec-rate) for dTRAM c_k_i_j kinetic mtx', default=10, type=int)
+    parser.add_option('-t', '--ftol', dest='f_toler_dtram', help='convergence tolerance for dTRAM iterative sc-procedure', default=1.0E-8, type=float)
+    opts, args = parser.parse_args()
+
     #read-in the simulations' metadata in the Grossfield's WHAM format
     # and the trajectories in the PLUMED's format
-    sim_data = SimData(wham_metadata_fname, bin_width)
-    sim_data.remove_unvisited()
+    sim_data = SimData(opts.wham_metadata_fname, opts.bin_width)
 
-    # get lower/upper bounds of the trajectories (all data)
-    lbound, ubound = sim_data.get_trajs_minmax()
-    # how many bins do we need?
-    nbins = int(abs(ubound-lbound) / bin_width) + 2  # +2 for edges
-    # generate gripoints aligned with "absolute 0"
-    gridpoints = np.linspace( get_bin_centre(lbound, bin_width), get_bin_centre(ubound, bin_width), nbins )
-    if sim_data.unvisited_states > 0:
-        sel = np.array(gridpoints, dtype=bool, copy=False)
-        sel[:] = True
-        sel[sim_data.unvisited_states] = False
-        gridpoints = gridpoints[sel]
+    # just an alias, gridpoints are saved as an attribute in the SimData obj
+    gridpoints = sim_data.gridpoints
 
 
 #%%
 
-    dtramdata = TRAMData(sim_data.trajs, b_K_i=sim_data.gen_harmonic_bias_mtx(gridpoints=gridpoints))
+    dtramdata = TRAMData( sim_data.trajs,
+    b_K_i=sim_data.gen_harmonic_bias_mtx(gridpoints=sim_data.gridpoints) )
 
     try:
-        dtram_obj_joe = dtram( dtramdata, lag=lag_time, maxiter=1, ftol=f_toler_dtram, verbose=False )
+        dtram_obj = dtram(dtramdata, lag=opts.lag_time, maxiter=1,
+                          ftol=opts.f_toler_dtram, verbose=False )
     except pytram.ExpressionError:
         raise pytram.ExpressionError, "Input was faulty, ending..."
     except pytram.NotConvergedWarning:
         pass
 
 
-    #%%
-
-    # set a better initial guess of f_i from WHAM:
-    try:
-        wham_fep = np.loadtxt(wham_fep_fname)
-    except:
-        print """File "+wham_fep_fname+" not accesible, or something else...
-        using implicit zeros as the initial values"""
-    # this is very DIRTY! f_i is meant to be private!
-    # FEP in kJ/mol is in the 2nd column (index 1)
-    dtram_obj_joe._f_i = wham_fep[:, 1] / (k_b*sim_data.sims[0]['temperature'])
-    # apply the norm used in the .sc_iteration method of dtram_obj:
-    dtram_obj_joe._f_i += scipy.misc.logsumexp(np.append(-dtram_obj_joe._f_i, dtramdata.n_markov_states))
-
-
-    # In[45]:
+#%%
 
     converged = False
     nruns=0
@@ -325,10 +359,10 @@ if __name__ == "__main__":
        try:
            print "Running another 1k steps ..."
            nruns+=1
-           if nruns > nruns_max:
+           if nruns > opts.nruns_max:
                print """BEWARE: Did not converge within 50k iterations, this is weird, ending. \nBEWARE: generated results are based on unconverged data! """
                break
-           dtram_obj_joe.sc_iteration(maxiter=1000)
+           dtram_obj.sc_iteration(maxiter=1000)
        except:
            print "Not converged in "+str(nruns)+"k steps. ",
        else:
@@ -343,15 +377,14 @@ if __name__ == "__main__":
 
     # "aliases" for plotting and saving
     #dTRAM data
-    cnz = (gridpoints) #[nz]
-    fep_dtram = dtram_obj_joe.f_i #[nz]
+    fep_dtram = dtram_obj.f_i
     fep_dtram_shift = np.copy(fep_dtram)
     fep_dtram_shift -= fep_dtram_shift.min()
 
-    with open("pitch_dTRAM-FEP_windows.pickle","w") as f : cPickle.dump(dtram_obj_joe.f_K,f)
+    with open("pitch_dTRAM-FEP_windows.pickle","w") as f : cPickle.dump(dtram_obj.f_K,f)
     with open("pitch_dTRAM-FEP.pickle","w") as f : cPickle.dump(fep_dtram_shift,f)
     with open("pitch_dTRAM-FEP.dat","w") as f:
-        for i,c in enumerate(cnz):
+        for i,c in enumerate(gridpoints):
            line = str(c)+"   "+str(fep_dtram_shift[i])+"\n"
            f.write( line )
 
@@ -363,8 +396,9 @@ if __name__ == "__main__":
 
     # Load the result from WHAM: (generated with the same set and with the same converg. criterion 1.0E-6, 90 bins ..)
     try:
-        wham_data = np.loadtxt(wham_fep_fname)
+        wham_data = np.loadtxt(opts.wham_fep_fname)
         cnz_wham = wham_data[:,0]
+        kT = k_b*sim_data.sims[0]['temperature']
         fep_wham = wham_data[:,1]/kT # scale by kT
         fep_wham_err1 =  wham_data[:,2]/kT + fep_wham
         fep_wham_err2 = -wham_data[:,2]/kT + fep_wham
@@ -373,7 +407,7 @@ if __name__ == "__main__":
     except:
         print "Wham data missing or just something wrong happened in the process. Look into the code, lad. "
 
-    plt.plot( cnz, fep_dtram_shift, '-', color='black', lw=2.0, label="dTRAM" )
+    plt.plot( gridpoints, fep_dtram_shift, '-', color='black', lw=2.0, label="dTRAM" )
 
     plt.legend( loc='upper left', fontsize=10 )
     plt.xlabel( r"$pitch$ [deg]", fontsize=12 )
