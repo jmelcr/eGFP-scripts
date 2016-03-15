@@ -62,13 +62,15 @@ class SimFiles:
                 # kappa is twice that large for Grossfields WHAM code than
                 # in the definition here + convert it to kT units from kJ/mol
                 kappa /= 2.0*k_b*temperature
-                tmpdict = {'fname': fname, 'numpad':numpad, 'x0': x_0, 'kappa': kappa, 'temperature': temperature}
+                tmpdict = {'fname': fname, 'numpad': numpad,
+                           'x0': x_0, 'kappa': kappa,
+                           'temperature': temperature}
                 self.sims.append(tmpdict)
             else:
                 self.nsims -= 1
 
 
-    def read_trajs(self):
+    def read_trajs(self, binwidth):
         """
         Reads in Plumed's Pitch files
 
@@ -84,7 +86,7 @@ class SimFiles:
             with the key convention of pytram
             dict-key 'm' -- Markov state -- 0-based indexing
         """
-        def discretize(data, offset=0.0):
+        def discretize(in_data, offset=0.0):
             """
             turns data into integers, i.e.
             discretizes data based on the offset and bin width
@@ -98,6 +100,7 @@ class SimFiles:
             offset : float
                 starting value for the discretization scheme
             """
+            data = np.copy(in_data)
             if offset != 0.0:
                 data -= offset
             # binwidth variable taken from the
@@ -105,8 +108,6 @@ class SimFiles:
             if binwidth != 1.0:
                 data /= binwidth
             return data.astype(int)
-
-        binwidth = self.bin_width
 
         smallest = None
         trajs = []
@@ -116,7 +117,7 @@ class SimFiles:
             tmpdict['time'], tmpdict['x'], tmpdict['b'] = np.hsplit(np.loadtxt(filename), 3)  # should contain exactly 3 columns
             tmpdict['m'] = discretize(tmpdict['x'])
             # find the smallest state-no
-            if smallest > tmpdict['m'].min() or smallest == None :
+            if  smallest == None or smallest > tmpdict['m'].min():
                 smallest = tmpdict['m'].min()
             tmpdict['t'] = np.ones(tmpdict['m'].shape, dtype=int) * i
             trajs.append(tmpdict)
@@ -157,7 +158,7 @@ class SimData(SimFiles):
         SimFiles.__init__(self, fname)
         if isinstance(bin_width, float):
             self.bin_width = bin_width
-            self.trajs = self.read_trajs()
+            self.trajs = self.read_trajs(binwidth=self.bin_width)
             self.remove_unvisited()
             self.gridpoints = self.get_gridpoints()
         else:
@@ -189,8 +190,10 @@ class SimData(SimFiles):
         if not isinstance(self.unvisited_states, list):
             print "Did you already look for unvisited states?"
         elif len(self.unvisited_states) > 0:
+            # sort unvisited states descending -> req'd for subseq. shifting
+            self.unvisited_states.sort(reverse=True)
             for i in self.unvisited_states:
-                for traj in trajs:
+                for traj in self.trajs:
                     # select all states with a higher index than i
                     sel = (traj['m'] > i)
                     # reduce their index-number by 1
@@ -231,7 +234,7 @@ class SimData(SimFiles):
         else:
             unvisited_states = []
 
-        for j in range(minim, maxim+1):
+        for j in range(minim, maxim):
             visited = False
             for traj in self.trajs:
                 if (traj['m'] == j ).any():
@@ -320,7 +323,7 @@ if __name__ == "__main__":
     parser.add_option('-m', '--metafile', dest='wham_metadata_fname', help='wham metadata file name', default="wham_meta.data")
     parser.add_option('-w', '--whamfep', dest='wham_fep_fname', help='wham FEP file name', default="wham_fep_histo.dat")
     parser.add_option('-b', '--binw', dest='bin_width', help='bin width', default=1.0, type=float)
-    parser.add_option('-i', '--niter', dest='nruns_max', help='no. iter*1k (=1run)', default=50, type=int)
+    parser.add_option('-i', '--niter', dest='nruns_max', help='no. iter*1k (=1run)', default=100, type=int)
     parser.add_option('-l', '--lag', dest='lag_time', help='lag time (in units of frame-rec-rate) for dTRAM c_k_i_j kinetic mtx', default=10, type=int)
     parser.add_option('-t', '--ftol', dest='f_toler_dtram', help='convergence tolerance for dTRAM iterative sc-procedure', default=1.0E-8, type=float)
     opts, args = parser.parse_args()
