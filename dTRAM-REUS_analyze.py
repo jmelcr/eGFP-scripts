@@ -154,13 +154,16 @@ class SimData(SimFiles):
 
     See the code for further details
     """
-    def __init__(self, fname, bin_width):
+    def __init__(self, fname, bin_width, verbose=False):
         SimFiles.__init__(self, fname)
         if isinstance(bin_width, float):
+            self.verbose = verbose
             self.bin_width = bin_width
             self.trajs = self.read_trajs(binwidth=self.bin_width)
             self.remove_unvisited()
             self.gridpoints = self.get_gridpoints()
+            self._n_therm_states = None
+            self._n_markov_states = None
         else:
             print "Incorrect bin_width provided: ", bin_width
             raise RuntimeError, "Terminating with exception ..."
@@ -278,6 +281,73 @@ class SimData(SimFiles):
 
         return gridpoints
 
+    def get_C_K_ij( self, lag=10, sliding_window=True ):
+        r"""
+        Parameters
+        ----------
+        lag : int
+            lagtime tau, at which the countmatrix should be evaluated
+        sliding_window : boolean (default=True)
+            lag is applied by mean of a sliding window or skipping data entries.
+
+        Returns
+        -------
+        C_K_ij : numpy.ndarray(shape=(T,M,M))
+            count matrices C_ij at each termodynamic state K
+        """
+        C_K_ij = np.zeros(
+            shape=(self.n_therm_states, self.n_markov_states, self.n_markov_states),
+            dtype=np.intc)
+        for traj in self.trajs:
+            t = 0
+            while t < traj['m'].shape[0]-lag:
+                K = traj['t'][t]
+                if np.all(traj['t'][t:t+lag+1] == K):
+                    C_K_ij[K, traj['m'][t], traj['m'][t+lag]] += 1
+                if sliding_window:
+                    t += 1
+                else:
+                    t += lag
+        return C_K_ij
+
+    ############################################################################
+    #
+    #   n_markov_states / n_therm_states getters
+    #
+    ############################################################################
+
+    @property
+    def n_markov_states(self):
+        if self._n_markov_states is None:
+            if self.verbose:
+                print "# Counting Markov states"
+            self._n_markov_states = 0
+            for traj in self.trajs:
+                max_state = np.max(traj['m'])
+                if max_state > self._n_markov_states:
+                    self._n_markov_states = max_state
+            self._n_markov_states += 1
+            if self.verbose:
+                print "# ... found %d Markov states" % self._n_markov_states
+        return self._n_markov_states
+
+    @property
+    def n_therm_states(self):
+        if self._n_therm_states is None:
+            if self.verbose:
+                print "# Counting thermodynamic states"
+            self._n_therm_states = 0
+            for traj in self.trajs:
+                max_state = np.max(traj['t'])
+                if max_state > self._n_therm_states:
+                    self._n_therm_states = max_state
+            self._n_therm_states += 1
+            if self.verbose:
+                print "# ... found %d thermodynamic states" % self._n_therm_states
+        return self._n_therm_states
+
+
+
 #%%
 
 def get_minmax(data):
@@ -313,7 +383,53 @@ def get_init_f_i_from_wham(wham_fep_fname, sim_data):
         print """File "+wham_fep_fname+" not accesible, or something else...
         using implicit zeros as the initial values"""
 
+def weighted_avg_and_std(values, weights):
+    """
+    Parameters
+    ----------
+    values : np.array
+        data to be averaged
+    weights : np.array
+        the weight factors corresponding to the data
+        -- both Numpy ndarrays with the same shape.
 
+    Returns
+    -------
+    Returns the weighted average and its variance as a tuple
+    """
+    average = np.average(values, weights=weights)
+    variance = np.average((values-average)**2, weights=weights)  # Fast and numerically precise
+    return (average, math.sqrt(variance))
+
+def weight_switch(vals, thres):
+    """
+    applies a switching function on an array element-wise for
+    elements that are above given thershold
+
+    For values that are delta above threshold,
+    the switching function is:
+      thres + delta*math.exp(-delta/thres)
+
+    Parameters
+    ----------
+    vals : array
+        input values for the switching function
+    thres : float
+        threshold value for the switching function
+
+    Returns
+    -------
+    weight_switch : np.array
+        of switched/corrected values (floats)
+    """
+    j=0
+    for i in xrange(vals.shape[0]):
+        if vals[i] > thres:
+            delta = abs(vals[i]-thres)
+            vals[i] = thres + delta*math.exp(-delta/thres)
+            j += 1
+    print j, "values out of", vals.shape[0], "(", j/vals.shape[0]*100.0, "%) were above threshold", thres, ".\n Their weights were reduced exponentially. "
+    return vals
 #%%
 
 if __name__ == "__main__":
@@ -335,6 +451,19 @@ if __name__ == "__main__":
     # just an alias, gridpoints are saved as an attribute in the SimData obj
     gridpoints = sim_data.gridpoints
 
+#%%
+
+    with open("pitch_dTRAM-FEP_windows.pickle","r") as f: winbiases = cPickle.load(f)
+
+#%%
+
+    ckij = sim_data.get_C_K_ij()
+
+#%%
+    bki = sim_data.gen_harmonic_bias_mtx(gridpoints)
+    # inserting the windows-biases into the b_K_i matrix
+    for k in range(ckij.shape[0]):
+        bki[k,:] -= winbiases[k]
 
 #%%
 
