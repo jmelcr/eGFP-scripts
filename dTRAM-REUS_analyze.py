@@ -281,6 +281,11 @@ class SimData(SimFiles):
 
         return gridpoints
 
+
+##########################
+#  Copied from dTRAM code
+##########################
+
     def get_C_K_ij( self, lag=10, sliding_window=True ):
         r"""
         Parameters
@@ -453,6 +458,11 @@ if __name__ == "__main__":
 
 #%%
 
+######################################
+#  C_K_ij trans-mtx Reweighting part
+######################################
+
+
     with open("pitch_dTRAM-FEP_windows.pickle","r") as f: winbiases = cPickle.load(f)
 
 #%%
@@ -462,10 +472,29 @@ if __name__ == "__main__":
 #%%
     bki = sim_data.gen_harmonic_bias_mtx(gridpoints)
     # inserting the windows-biases into the b_K_i matrix
+#%%
+    # the result of dTRAM shoud not (and does not) depend on this
     for k in range(ckij.shape[0]):
         bki[k,:] -= winbiases[k]
 
 #%%
+
+    dtrammtx = pytram.dtram_from_matrix(ckij,bki, maxiter=5000)
+#%%
+    dtrammtx.sc_iteration(maxiter=5000, ftol=1.0E-5)
+    plt.plot(gridpoints, dtrammtx.f_i) #-fep_dtram)
+    plt.savefig("figtest1.png",dpi=200)
+    plt.show()
+
+#%%
+
+
+
+#%%
+
+################################
+#  OLD code continues...
+################################
 
     dtramdata = TRAMData( sim_data.trajs,
     b_K_i=sim_data.gen_harmonic_bias_mtx(gridpoints=sim_data.gridpoints) )
