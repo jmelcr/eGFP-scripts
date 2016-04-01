@@ -19,12 +19,13 @@
 from pytram import TRAMData, dtram # this is the dTRAM API function
 import pytram
 import numpy as np
-import scipy
+import scipy, math
 import matplotlib.pyplot as plt
 import cPickle
 from optparse import OptionParser
 
 k_b = 0.0083144621  #kJ/Mol*K
+max_weight_thres = math.exp(2.0)
 
 
 #%%
@@ -115,6 +116,8 @@ class SimFiles:
             filename = sim['fname']
             tmpdict = {}
             tmpdict['time'], tmpdict['x'], tmpdict['b'] = np.hsplit(np.loadtxt(filename), 3)  # should contain exactly 3 columns
+            # convert from kJ/mol to kT units
+            tmpdict['b'] /= k_b*sim['temperature']
             tmpdict['m'] = discretize(tmpdict['x'])
             # find the smallest state-no
             if  smallest == None or smallest > tmpdict['m'].min():
@@ -282,6 +285,39 @@ class SimData(SimFiles):
         return gridpoints
 
 
+    def get_reweighted_C_K_ij( self, lag=10, sliding_window=True ):
+        r"""
+        Parameters
+        ----------
+        lag : int
+            lagtime tau, at which the countmatrix should be evaluated
+        sliding_window : boolean (default=True)
+            lag is applied by mean of a sliding window or skipping data entries.
+
+        Returns
+        -------
+        C_K_ij : numpy.ndarray(shape=(T,M,M))
+            reweighted count matrices C_ij at each termodynamic state K
+        """
+        C_K_ij = np.zeros(
+            shape=(self.n_therm_states, self.n_markov_states, self.n_markov_states),
+            dtype=np.float)
+        for traj in self.trajs:
+            t = 0
+            while t < traj['m'].shape[0]-lag:
+                K = traj['t'][t]
+                if np.all(traj['t'][t:t+lag+1] == K):
+                    # here's the change that introduces reweighting
+                    # biases already in kT units (converted during reading-in)
+                    weight = weight_switch(math.exp( -traj['b'][t+lag] + traj['b'][t] ), max_weight_thres)
+                    C_K_ij[K, traj['m'][t], traj['m'][t+lag]] += math.exp( -traj['b'][t+lag] + traj['b'][t] )
+                if sliding_window:
+                    t += 1
+                else:
+                    t += lag
+        return C_K_ij
+
+
 ##########################
 #  Copied from dTRAM code
 ##########################
@@ -424,16 +460,25 @@ def weight_switch(vals, thres):
 
     Returns
     -------
-    weight_switch : np.array
+    weight_switch : np.array, or just float
         of switched/corrected values (floats)
     """
+    def switch_func(value):
+        " Switching function with exp decay "
+        delta = abs(value-thres)
+        return thres + delta*math.exp(-delta/thres)
+
     j=0
-    for i in xrange(vals.shape[0]):
-        if vals[i] > thres:
-            delta = abs(vals[i]-thres)
-            vals[i] = thres + delta*math.exp(-delta/thres)
-            j += 1
-    print j, "values out of", vals.shape[0], "(", j/vals.shape[0]*100.0, "%) were above threshold", thres, ".\n Their weights were reduced exponentially. "
+    if isinstance(vals, np.ndarray):
+        for i in xrange(vals.shape[0]):
+            if vals[i] > thres:
+                vals[i] = switch_func(vals[i])
+                j += 1
+        print j, "values out of", vals.shape[0], "(", j/vals.shape[0]*100.0, "%) were above threshold", thres, ".\n Their weights were reduced exponentially. "
+    elif isinstance(vals, float):
+        vals = switch_func(vals)
+    else:
+        print "Wrong input type for values (vals)!"
     return vals
 #%%
 
@@ -467,7 +512,7 @@ if __name__ == "__main__":
 
 #%%
 
-    ckij = sim_data.get_C_K_ij()
+    ckij = sim_data.get_reweighted_C_K_ij()
 
 #%%
     bki = sim_data.gen_harmonic_bias_mtx(gridpoints)
@@ -478,12 +523,21 @@ if __name__ == "__main__":
         bki[k,:] -= winbiases[k]
 
 #%%
+    # turn biases all to 1s, as they are already contained in the reweighted ckij mtx
+    bki = np.ones(shape=bki.shape, dtype=np.float)
 
-    dtrammtx = pytram.dtram_from_matrix(ckij,bki, maxiter=5000)
+#%%
+
+    # this is UGLY!!
+    int_ckij = np.intc(ckij.round())
+    dtrammtx = pytram.dtram_from_matrix(int_ckij,bki, maxiter=5000)
+
 #%%
     dtrammtx.sc_iteration(maxiter=5000, ftol=1.0E-5)
+
+#%%
     plt.plot(gridpoints, dtrammtx.f_i) #-fep_dtram)
-    plt.savefig("figtest1.png",dpi=200)
+    #plt.savefig("figtest1.png",dpi=200)
     plt.show()
 
 #%%
