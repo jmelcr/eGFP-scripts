@@ -317,6 +317,62 @@ class SimData(SimFiles):
                     t += lag
         return C_K_ij
 
+    def get_reweighted_TransMtx( self, lag=10, sliding_window=True ):
+        r"""
+        provides Transition matrix (non-reversible estimator,
+        violates detailed balance)
+        using already reweighted countMtx (calls the method)
+
+        Parameters
+        ----------
+        lag : int
+            lagtime tau, at which the countmatrix should be evaluated
+        sliding_window : boolean (default=True)
+            lag is applied by mean of a sliding window or skipping data entries.
+
+        Returns
+        -------
+        T : numpy.ndarray(shape=(M,M))
+            Transition prob. mtx that had used already reweighted counts
+        """
+        C_K_ij = self.get_reweighted_C_K_ij(lag, sliding_window)
+        T = np.zeros(shape=C_K_ij.shape[1:], dtype=np.float)
+        for K in range(C_K_ij.shape[0]):
+            for i in range(C_K_ij.shape[1]):
+                for j in range(C_K_ij.shape[2]):
+                    if C_K_ij[K,i,j] == 0.0 :
+                        T[i,j] += 0.0
+                    else:
+                        T[i,j] += C_K_ij[K,i,j]/C_K_ij[K,i,:].sum()
+        # divide by K, no. therm. states to complete the averageing above
+        T /= C_K_ij.shape[0]
+        return T
+
+    def get_reweighted_distribution( self, T ):
+        r"""
+        provides Transition matrix (non-reversible estimator,
+        violates detailed balance)
+        using already reweighted countMtx (calls the method)
+
+        Parameters
+        ----------
+        T : numpy.ndarray(shape=(M,M))
+            Transition prob. mtx that had used already reweighted counts
+
+        Returns
+        -------
+        p : numpy.ndarray(shape=(M))
+            probability distribution based on
+            already reweighted Trans mtx T and reweighted counts
+        """
+        p = np.zeros(shape=T.shape[0], dtype=np.float)
+        for j in range(T.shape[1]):
+            p[j] = T[:,j].sum()
+        # normalize p
+        p /= p.sum()
+        return p
+
+
 
 ##########################
 #  Copied from dTRAM code
@@ -523,6 +579,9 @@ if __name__ == "__main__":
         bki[k,:] -= winbiases[k]
 
 #%%
+
+    # an attempt to use dtram for estimating already reweighted count-mtx
+
     # turn biases all to 1s, as they are already contained in the reweighted ckij mtx
     bki = np.ones(shape=bki.shape, dtype=np.float)
 
@@ -542,6 +601,9 @@ if __name__ == "__main__":
 
 #%%
 
+    T = sim_data.get_reweighted_TransMtx()
+    p = sim_data.get_reweighted_distribution(T)
+    plt.plot(gridpoints, p)
 
 
 #%%
