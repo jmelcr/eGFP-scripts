@@ -366,10 +366,22 @@ class SimData(SimFiles):
             already reweighted Trans mtx T and reweighted counts
         """
         p = np.zeros(shape=T.shape[0], dtype=np.float)
-        for j in range(T.shape[1]):
-            p[j] = T[:,j].sum()
+        # this shape might be a small dirty hack
+        temp = np.zeros(shape=T.shape, dtype=np.float)
+        ind = 3
+        for i in range(temp.shape[0]):
+            for j in range(temp.shape[0]):
+                if abs(T[i,j])<=1.0E-5:
+                    temp[i,j] = 0.0
+                else:
+                    temp[i,j] = T[j, i]/T[i, j]
+
+        for i in range(temp.shape[0]):
+            p[i] = np.average(temp[:,i])
+
         # normalize p
-        p /= p.sum()
+        #p /= p.sum()
+        print "This is a wrong estimator!"
         return p
 
 
