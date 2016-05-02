@@ -19,12 +19,19 @@
 from pytram import TRAMData, dtram # this is the dTRAM API function
 import pytram
 import numpy as np
-import scipy
+import scipy, math
 import matplotlib.pyplot as plt
 import cPickle
 from optparse import OptionParser
 
 k_b = 0.0083144621  #kJ/Mol*K
+try:
+    import read_xvg_calc_mean as rxvg
+except:
+    print "Couldn't read XVG-reading library, can't process Gromacs pullx.xvg files!"
+
+k_b = 0.0083144621  #kJ/Mol*K
+max_weight_thres = math.exp(2.0)
 
 
 #%%
@@ -38,7 +45,7 @@ class SimFiles:
 
     See the code for further details
     """
-    def __init__(self, fname):
+    def __init__(self, fname, traj_file_format="plain"):
         if not isinstance(fname, str):
             raise RuntimeError, "provided filename is not a string!"
         self.fname = fname
@@ -50,6 +57,7 @@ class SimFiles:
             raise IOError, "Can't open/close/read the provided file!"
 
         self.nsims = len(lines)
+	self.traj_file_format = traj_file_format
 
         # list of simulation meta-data dictionaries
         self.sims = []
@@ -72,13 +80,18 @@ class SimFiles:
 
     def read_trajs(self, binwidth):
         """
-        Reads in Plumed's Pitch files
+        Reads in Plumed's Pitch files (3columns) or Gromacs pullx files (8 columns)
 
-        File format:
+        File format plain (Plumed):
         ------------
         3 columns : floats
             Time -- PITCH -- bias
             crashes or unexpected behaviour if different format (e.g. more cols)
+
+        File format xvg (Gromacs pullx):
+        ------------
+        8 columns : floats
+            Time -- x,y,z -- length -- dx,dy,dz
 
         Returns
         -------
@@ -114,12 +127,24 @@ class SimFiles:
         for i, sim in enumerate(self.sims):
             filename = sim['fname']
             tmpdict = {}
-            tmpdict['time'], tmpdict['x'], tmpdict['b'] = np.hsplit(np.loadtxt(filename), 3)  # should contain exactly 3 columns
+            if self.traj_file_format == "plain" :
+               # should contain exactly 3 columns
+               tmpdict['time'], tmpdict['x'], tmpdict['b'] = np.hsplit(np.loadtxt(filename), 3)  
+               # convert from kJ/mol to kT units
+               tmpdict['b'] /= k_b*sim['temperature']
+            elif self.traj_file_format == "xvg" :
+		#create a numpy array with the contents of .xvg file;
+                # should contain exactly 8 columns
+		tmp_arr = np.array( rxvg.lines_to_list_of_lists(rxvg.read_xvg(filename)) )
+		tmpdict['time'] = tmp_arr[:,0]
+		tmpdict['x'] = tmp_arr[:,4]
+
             tmpdict['m'] = discretize(tmpdict['x'])
             # find the smallest state-no
             if  smallest == None or smallest > tmpdict['m'].min():
                 smallest = tmpdict['m'].min()
-            tmpdict['t'] = np.ones(tmpdict['m'].shape, dtype=int) * i
+
+            tmpdict['t'] = np.ones(tmpdict['m'].shape, dtype=int) * i  # gradually incerment thermodynamic state id
             trajs.append(tmpdict)
 
         # shift the trajs by the smallest state-no (smallest var)
@@ -154,13 +179,16 @@ class SimData(SimFiles):
 
     See the code for further details
     """
-    def __init__(self, fname, bin_width):
-        SimFiles.__init__(self, fname)
+    def __init__(self, fname, bin_width, verbose=False, traj_file_format="plain"):
+        SimFiles.__init__(self, fname, traj_file_format)
         if isinstance(bin_width, float):
+            self.verbose = verbose
             self.bin_width = bin_width
             self.trajs = self.read_trajs(binwidth=self.bin_width)
             self.remove_unvisited()
             self.gridpoints = self.get_gridpoints()
+            self._n_therm_states = None
+            self._n_markov_states = None
         else:
             print "Incorrect bin_width provided: ", bin_width
             raise RuntimeError, "Terminating with exception ..."
@@ -278,6 +306,178 @@ class SimData(SimFiles):
 
         return gridpoints
 
+    def get_reweighted_C_K_ij( self, lag=10, sliding_window=True ):
+        r"""
+        Parameters
+        ----------
+        lag : int
+            lagtime tau, at which the countmatrix should be evaluated
+        sliding_window : boolean (default=True)
+            lag is applied by mean of a sliding window or skipping data entries.
+
+        Returns
+        -------
+        C_K_ij : numpy.ndarray(shape=(T,M,M))
+            reweighted count matrices C_ij at each termodynamic state K
+        """
+        C_K_ij = np.zeros(
+            shape=(self.n_therm_states, self.n_markov_states, self.n_markov_states),
+            dtype=np.float)
+        for traj in self.trajs:
+            t = 0
+            while t < traj['m'].shape[0]-lag:
+                K = traj['t'][t]
+                if np.all(traj['t'][t:t+lag+1] == K):
+                    # here's the change that introduces reweighting
+                    # biases already in kT units (converted during reading-in)
+                    weight = weight_switch(math.exp( -traj['b'][t+lag] + traj['b'][t] ), max_weight_thres)
+                    C_K_ij[K, traj['m'][t], traj['m'][t+lag]] += math.exp( -traj['b'][t+lag] + traj['b'][t] )
+                if sliding_window:
+                    t += 1
+                else:
+                    t += lag
+        return C_K_ij
+
+    def get_reweighted_TransMtx( self, lag=10, sliding_window=True ):
+        r"""
+        provides Transition matrix (non-reversible estimator,
+        violates detailed balance)
+        using already reweighted countMtx (calls the method)
+
+        Parameters
+        ----------
+        lag : int
+            lagtime tau, at which the countmatrix should be evaluated
+        sliding_window : boolean (default=True)
+            lag is applied by mean of a sliding window or skipping data entries.
+
+        Returns
+        -------
+        T : numpy.ndarray(shape=(M,M))
+            Transition prob. mtx that had used already reweighted counts
+        """
+        C_K_ij = self.get_reweighted_C_K_ij(lag, sliding_window)
+        T = np.zeros(shape=C_K_ij.shape[1:], dtype=np.float)
+        for K in range(C_K_ij.shape[0]):
+            for i in range(C_K_ij.shape[1]):
+                for j in range(C_K_ij.shape[2]):
+                    if C_K_ij[K,i,j] == 0.0 :
+                        T[i,j] += 0.0
+                    else:
+                        T[i,j] += C_K_ij[K,i,j]/C_K_ij[K,i,:].sum()
+        # divide by K, no. therm. states to complete the averageing above
+        T /= C_K_ij.shape[0]
+        return T
+
+    def get_reweighted_distribution( self, T ):
+        r"""
+        provides Transition matrix (non-reversible estimator,
+        violates detailed balance)
+        using already reweighted countMtx (calls the method)
+
+        Parameters
+        ----------
+        T : numpy.ndarray(shape=(M,M))
+            Transition prob. mtx that had used already reweighted counts
+
+        Returns
+        -------
+        p : numpy.ndarray(shape=(M))
+            probability distribution based on
+            already reweighted Trans mtx T and reweighted counts
+        """
+        p = np.zeros(shape=T.shape[0], dtype=np.float)
+        # this shape might be a small dirty hack
+        temp = np.zeros(shape=T.shape, dtype=np.float)
+        ind = 3
+        for i in range(temp.shape[0]):
+            for j in range(temp.shape[0]):
+                if abs(T[i,j])<=1.0E-5:
+                    temp[i,j] = 0.0
+                else:
+                    temp[i,j] = T[j, i]/T[i, j]
+
+        for i in range(temp.shape[0]):
+            p[i] = np.average(temp[:,i])
+
+        # normalize p
+        #p /= p.sum()
+        print "This is a wrong estimator!"
+        return p
+
+
+
+##########################
+#  Copied from dTRAM code
+##########################
+
+    def get_C_K_ij( self, lag=10, sliding_window=True ):
+        r"""
+        Parameters
+        ----------
+        lag : int
+            lagtime tau, at which the countmatrix should be evaluated
+        sliding_window : boolean (default=True)
+            lag is applied by mean of a sliding window or skipping data entries.
+
+        Returns
+        -------
+        C_K_ij : numpy.ndarray(shape=(T,M,M))
+            count matrices C_ij at each termodynamic state K
+        """
+        C_K_ij = np.zeros(
+            shape=(self.n_therm_states, self.n_markov_states, self.n_markov_states),
+            dtype=np.intc)
+        for traj in self.trajs:
+            t = 0
+            while t < traj['m'].shape[0]-lag:
+                K = traj['t'][t]
+                if np.all(traj['t'][t:t+lag+1] == K):
+                    C_K_ij[K, traj['m'][t], traj['m'][t+lag]] += 1
+                if sliding_window:
+                    t += 1
+                else:
+                    t += lag
+        return C_K_ij
+
+    ############################################################################
+    #
+    #   n_markov_states / n_therm_states getters
+    #
+    ############################################################################
+
+    @property
+    def n_markov_states(self):
+        if self._n_markov_states is None:
+            if self.verbose:
+                print "# Counting Markov states"
+            self._n_markov_states = 0
+            for traj in self.trajs:
+                max_state = np.max(traj['m'])
+                if max_state > self._n_markov_states:
+                    self._n_markov_states = max_state
+            self._n_markov_states += 1
+            if self.verbose:
+                print "# ... found %d Markov states" % self._n_markov_states
+        return self._n_markov_states
+
+    @property
+    def n_therm_states(self):
+        if self._n_therm_states is None:
+            if self.verbose:
+                print "# Counting thermodynamic states"
+            self._n_therm_states = 0
+            for traj in self.trajs:
+                max_state = np.max(traj['t'])
+                if max_state > self._n_therm_states:
+                    self._n_therm_states = max_state
+            self._n_therm_states += 1
+            if self.verbose:
+                print "# ... found %d thermodynamic states" % self._n_therm_states
+        return self._n_therm_states
+
+
+
 #%%
 
 def get_minmax(data):
@@ -313,7 +513,62 @@ def get_init_f_i_from_wham(wham_fep_fname, sim_data):
         print """File "+wham_fep_fname+" not accesible, or something else...
         using implicit zeros as the initial values"""
 
+def weighted_avg_and_std(values, weights):
+    """
+    Parameters
+    ----------
+    values : np.array
+        data to be averaged
+    weights : np.array
+        the weight factors corresponding to the data
+        -- both Numpy ndarrays with the same shape.
 
+    Returns
+    -------
+    Returns the weighted average and its variance as a tuple
+    """
+    average = np.average(values, weights=weights)
+    variance = np.average((values-average)**2, weights=weights)  # Fast and numerically precise
+    return (average, math.sqrt(variance))
+
+def weight_switch(vals, thres):
+    """
+    applies a switching function on an array element-wise for
+    elements that are above given thershold
+
+    For values that are delta above threshold,
+    the switching function is:
+      thres + delta*math.exp(-delta/thres)
+
+    Parameters
+    ----------
+    vals : array
+        input values for the switching function
+    thres : float
+        threshold value for the switching function
+
+    Returns
+    -------
+    weight_switch : np.array, or just float
+        of switched/corrected values (floats)
+    """
+    def switch_func(value):
+        " Switching function with exp decay "
+        delta = abs(value-thres)
+        return thres + delta*math.exp(-delta/thres)
+
+    j=0
+    if isinstance(vals, np.ndarray):
+        for i in xrange(vals.shape[0]):
+            if vals[i] > thres:
+                vals[i] = switch_func(vals[i])
+                j += 1
+        print j, "values out of", vals.shape[0], "(", j/vals.shape[0]*100.0, "%) were above threshold", thres, ".\n Their weights were reduced exponentially. "
+    elif isinstance(vals, float):
+        vals = switch_func(vals)
+    else:
+        print "Wrong input type for values (vals)!"
+    return vals
 #%%
 
 if __name__ == "__main__":
@@ -322,6 +577,7 @@ if __name__ == "__main__":
     parser = OptionParser()
     parser.add_option('-m', '--metafile', dest='wham_metadata_fname', help='wham metadata file name', default="wham_meta.data")
     parser.add_option('-w', '--whamfep', dest='wham_fep_fname', help='wham FEP file name', default="wham_fep_histo.dat")
+    parser.add_option('-f', '--trajform', dest='traj_file_format', help='file format of the trajectories (def. plain, xvg)', default="plain")
     parser.add_option('-b', '--binw', dest='bin_width', help='bin width', default=1.0, type=float)
     parser.add_option('-i', '--niter', dest='nruns_max', help='no. iter*1k (=1run)', default=100, type=int)
     parser.add_option('-l', '--lag', dest='lag_time', help='lag time (in units of frame-rec-rate) for dTRAM c_k_i_j kinetic mtx', default=10, type=int)
@@ -330,13 +586,65 @@ if __name__ == "__main__":
 
     #read-in the simulations' metadata in the Grossfield's WHAM format
     # and the trajectories in the PLUMED's format
-    sim_data = SimData(opts.wham_metadata_fname, opts.bin_width)
+    sim_data = SimData(opts.wham_metadata_fname, opts.bin_width, traj_file_format=opts.traj_file_format)
 
     # just an alias, gridpoints are saved as an attribute in the SimData obj
     gridpoints = sim_data.gridpoints
 
-
 #%%
+
+######################################
+#  C_K_ij trans-mtx Reweighting part
+######################################
+
+    if False:
+	    with open("pitch_dTRAM-FEP_windows.pickle","r") as f: winbiases = cPickle.load(f)
+
+	#%%
+
+	    ckij = sim_data.get_reweighted_C_K_ij()
+
+	#%%
+	    bki = sim_data.gen_harmonic_bias_mtx(gridpoints)
+	    # inserting the windows-biases into the b_K_i matrix
+	#%%
+	    # the result of dTRAM shoud not (and does not) depend on this
+	    for k in range(ckij.shape[0]):
+		bki[k,:] -= winbiases[k]
+
+	#%%
+
+	    # an attempt to use dtram for estimating already reweighted count-mtx
+
+	    # turn biases all to 1s, as they are already contained in the reweighted ckij mtx
+	    bki = np.ones(shape=bki.shape, dtype=np.float)
+
+	#%%
+
+	    # this is UGLY!!
+	    int_ckij = np.intc(ckij.round())
+	    dtrammtx = pytram.dtram_from_matrix(int_ckij,bki, maxiter=5000)
+
+	#%%
+	    dtrammtx.sc_iteration(maxiter=5000, ftol=1.0E-5)
+
+	#%%
+	    plt.plot(gridpoints, dtrammtx.f_i) #-fep_dtram)
+	    #plt.savefig("figtest1.png",dpi=200)
+	    plt.show()
+
+	#%%
+
+	    T = sim_data.get_reweighted_TransMtx()
+	    p = sim_data.get_reweighted_distribution(T)
+	    plt.plot(gridpoints, p)
+
+
+	#%%
+
+################################
+#  OLD code continues...
+################################
 
     dtramdata = TRAMData( sim_data.trajs,
     b_K_i=sim_data.gen_harmonic_bias_mtx(gridpoints=sim_data.gridpoints) )
@@ -400,10 +708,13 @@ if __name__ == "__main__":
         cnz_wham = wham_data[:,0]
         kT = k_b*sim_data.sims[0]['temperature']
         fep_wham = wham_data[:,1]/kT # scale by kT
-        fep_wham_err1 =  wham_data[:,2]/kT + fep_wham
-        fep_wham_err2 = -wham_data[:,2]/kT + fep_wham
         plt.plot( cnz_wham, fep_wham, '-', color='green', lw=2.0, label="WHAM" )
-        plt.fill_between( cnz_wham, fep_wham_err1, fep_wham_err2, color='green', alpha=0.2)
+	try:
+		fep_wham_err1 =  wham_data[:,2]/kT + fep_wham
+		fep_wham_err2 = -wham_data[:,2]/kT + fep_wham
+		plt.fill_between( cnz_wham, fep_wham_err1, fep_wham_err2, color='green', alpha=0.2)
+	except:
+		print "Couldn't read-in the errorbars for WHAM-data."
     except:
         print "Wham data missing or just something wrong happened in the process. Look into the code, lad. "
 
