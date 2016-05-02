@@ -23,6 +23,10 @@ import scipy, math
 import matplotlib.pyplot as plt
 import cPickle
 from optparse import OptionParser
+try:
+    import read_xvg_calc_mean as rxvg
+except:
+    print "Couldn't read XVG-reading library, can't process Gromacs pullx.xvg files!"
 
 k_b = 0.0083144621  #kJ/Mol*K
 max_weight_thres = math.exp(2.0)
@@ -39,7 +43,7 @@ class SimFiles:
 
     See the code for further details
     """
-    def __init__(self, fname):
+    def __init__(self, fname, traj_file_format="plain"):
         if not isinstance(fname, str):
             raise RuntimeError, "provided filename is not a string!"
         self.fname = fname
@@ -51,6 +55,7 @@ class SimFiles:
             raise IOError, "Can't open/close/read the provided file!"
 
         self.nsims = len(lines)
+	self.traj_file_format = traj_file_format
 
         # list of simulation meta-data dictionaries
         self.sims = []
@@ -73,13 +78,18 @@ class SimFiles:
 
     def read_trajs(self, binwidth):
         """
-        Reads in Plumed's Pitch files
+        Reads in Plumed's Pitch files (3columns) or Gromacs pullx files (8 columns)
 
-        File format:
+        File format plain (Plumed):
         ------------
         3 columns : floats
             Time -- PITCH -- bias
             crashes or unexpected behaviour if different format (e.g. more cols)
+
+        File format xvg (Gromacs pullx):
+        ------------
+        8 columns : floats
+            Time -- x,y,z -- length -- dx,dy,dz
 
         Returns
         -------
@@ -115,14 +125,24 @@ class SimFiles:
         for i, sim in enumerate(self.sims):
             filename = sim['fname']
             tmpdict = {}
-            tmpdict['time'], tmpdict['x'], tmpdict['b'] = np.hsplit(np.loadtxt(filename), 3)  # should contain exactly 3 columns
-            # convert from kJ/mol to kT units
-            tmpdict['b'] /= k_b*sim['temperature']
+            if self.traj_file_format == "plain" :
+               # should contain exactly 3 columns
+               tmpdict['time'], tmpdict['x'], tmpdict['b'] = np.hsplit(np.loadtxt(filename), 3)  
+               # convert from kJ/mol to kT units
+               tmpdict['b'] /= k_b*sim['temperature']
+            elif self.traj_file_format == "xvg" :
+		#create a numpy array with the contents of .xvg file;
+                # should contain exactly 8 columns
+		tmp_arr = np.array( rxvg.lines_to_list_of_lists(rxvg.read_xvg(filename)) )
+		tmpdict['time'] = tmp_arr[:,0]
+		tmpdict['x'] = tmp_arr[:,4]
+
             tmpdict['m'] = discretize(tmpdict['x'])
             # find the smallest state-no
             if  smallest == None or smallest > tmpdict['m'].min():
                 smallest = tmpdict['m'].min()
-            tmpdict['t'] = np.ones(tmpdict['m'].shape, dtype=int) * i
+
+            tmpdict['t'] = np.ones(tmpdict['m'].shape, dtype=int) * i  # gradually incerment thermodynamic state id
             trajs.append(tmpdict)
 
         # shift the trajs by the smallest state-no (smallest var)
@@ -157,8 +177,8 @@ class SimData(SimFiles):
 
     See the code for further details
     """
-    def __init__(self, fname, bin_width, verbose=False):
-        SimFiles.__init__(self, fname)
+    def __init__(self, fname, bin_width, verbose=False, traj_file_format="plain"):
+        SimFiles.__init__(self, fname, traj_file_format)
         if isinstance(bin_width, float):
             self.verbose = verbose
             self.bin_width = bin_width
@@ -556,6 +576,7 @@ if __name__ == "__main__":
     parser = OptionParser()
     parser.add_option('-m', '--metafile', dest='wham_metadata_fname', help='wham metadata file name', default="wham_meta.data")
     parser.add_option('-w', '--whamfep', dest='wham_fep_fname', help='wham FEP file name', default="wham_fep_histo.dat")
+    parser.add_option('-f', '--trajform', dest='traj_file_format', help='file format of the trajectories (def. plain, xvg)', default="plain")
     parser.add_option('-b', '--binw', dest='bin_width', help='bin width', default=1.0, type=float)
     parser.add_option('-i', '--niter', dest='nruns_max', help='no. iter*1k (=1run)', default=100, type=int)
     parser.add_option('-l', '--lag', dest='lag_time', help='lag time (in units of frame-rec-rate) for dTRAM c_k_i_j kinetic mtx', default=10, type=int)
@@ -564,7 +585,7 @@ if __name__ == "__main__":
 
     #read-in the simulations' metadata in the Grossfield's WHAM format
     # and the trajectories in the PLUMED's format
-    sim_data = SimData(opts.wham_metadata_fname, opts.bin_width)
+    sim_data = SimData(opts.wham_metadata_fname, opts.bin_width, traj_file_format=opts.traj_file_format)
 
     # just an alias, gridpoints are saved as an attribute in the SimData obj
     gridpoints = sim_data.gridpoints
@@ -575,50 +596,50 @@ if __name__ == "__main__":
 #  C_K_ij trans-mtx Reweighting part
 ######################################
 
+    if False:
+	    with open("pitch_dTRAM-FEP_windows.pickle","r") as f: winbiases = cPickle.load(f)
 
-    with open("pitch_dTRAM-FEP_windows.pickle","r") as f: winbiases = cPickle.load(f)
+	#%%
 
-#%%
+	    ckij = sim_data.get_reweighted_C_K_ij()
 
-    ckij = sim_data.get_reweighted_C_K_ij()
+	#%%
+	    bki = sim_data.gen_harmonic_bias_mtx(gridpoints)
+	    # inserting the windows-biases into the b_K_i matrix
+	#%%
+	    # the result of dTRAM shoud not (and does not) depend on this
+	    for k in range(ckij.shape[0]):
+		bki[k,:] -= winbiases[k]
 
-#%%
-    bki = sim_data.gen_harmonic_bias_mtx(gridpoints)
-    # inserting the windows-biases into the b_K_i matrix
-#%%
-    # the result of dTRAM shoud not (and does not) depend on this
-    for k in range(ckij.shape[0]):
-        bki[k,:] -= winbiases[k]
+	#%%
 
-#%%
+	    # an attempt to use dtram for estimating already reweighted count-mtx
 
-    # an attempt to use dtram for estimating already reweighted count-mtx
+	    # turn biases all to 1s, as they are already contained in the reweighted ckij mtx
+	    bki = np.ones(shape=bki.shape, dtype=np.float)
 
-    # turn biases all to 1s, as they are already contained in the reweighted ckij mtx
-    bki = np.ones(shape=bki.shape, dtype=np.float)
+	#%%
 
-#%%
+	    # this is UGLY!!
+	    int_ckij = np.intc(ckij.round())
+	    dtrammtx = pytram.dtram_from_matrix(int_ckij,bki, maxiter=5000)
 
-    # this is UGLY!!
-    int_ckij = np.intc(ckij.round())
-    dtrammtx = pytram.dtram_from_matrix(int_ckij,bki, maxiter=5000)
+	#%%
+	    dtrammtx.sc_iteration(maxiter=5000, ftol=1.0E-5)
 
-#%%
-    dtrammtx.sc_iteration(maxiter=5000, ftol=1.0E-5)
+	#%%
+	    plt.plot(gridpoints, dtrammtx.f_i) #-fep_dtram)
+	    #plt.savefig("figtest1.png",dpi=200)
+	    plt.show()
 
-#%%
-    plt.plot(gridpoints, dtrammtx.f_i) #-fep_dtram)
-    #plt.savefig("figtest1.png",dpi=200)
-    plt.show()
+	#%%
 
-#%%
-
-    T = sim_data.get_reweighted_TransMtx()
-    p = sim_data.get_reweighted_distribution(T)
-    plt.plot(gridpoints, p)
+	    T = sim_data.get_reweighted_TransMtx()
+	    p = sim_data.get_reweighted_distribution(T)
+	    plt.plot(gridpoints, p)
 
 
-#%%
+	#%%
 
 ################################
 #  OLD code continues...
@@ -686,10 +707,13 @@ if __name__ == "__main__":
         cnz_wham = wham_data[:,0]
         kT = k_b*sim_data.sims[0]['temperature']
         fep_wham = wham_data[:,1]/kT # scale by kT
-        fep_wham_err1 =  wham_data[:,2]/kT + fep_wham
-        fep_wham_err2 = -wham_data[:,2]/kT + fep_wham
         plt.plot( cnz_wham, fep_wham, '-', color='green', lw=2.0, label="WHAM" )
-        plt.fill_between( cnz_wham, fep_wham_err1, fep_wham_err2, color='green', alpha=0.2)
+	try:
+		fep_wham_err1 =  wham_data[:,2]/kT + fep_wham
+		fep_wham_err2 = -wham_data[:,2]/kT + fep_wham
+		plt.fill_between( cnz_wham, fep_wham_err1, fep_wham_err2, color='green', alpha=0.2)
+	except:
+		print "Couldn't read-in the errorbars for WHAM-data."
     except:
         print "Wham data missing or just something wrong happened in the process. Look into the code, lad. "
 
