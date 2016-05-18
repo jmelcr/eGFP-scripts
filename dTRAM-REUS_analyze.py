@@ -24,7 +24,6 @@ import matplotlib.pyplot as plt
 import cPickle
 from optparse import OptionParser
 
-k_b = 0.0083144621  #kJ/Mol*K
 try:
     import read_xvg_calc_mean as rxvg
 except:
