@@ -87,6 +87,10 @@ class SimFiles:
             Time -- PITCH -- bias
             crashes or unexpected behaviour if different format (e.g. more cols)
 
+        File format plain2 (Plumed):
+        ------------
+	2 columns (otherwise same)
+
         File format xvg (Gromacs pullx):
         ------------
         8 columns : floats
@@ -131,6 +135,9 @@ class SimFiles:
                tmpdict['time'], tmpdict['x'], tmpdict['b'] = np.hsplit(np.loadtxt(filename), 3)  
                # convert from kJ/mol to kT units
                tmpdict['b'] /= k_b*sim['temperature']
+            elif self.traj_file_format == "plain2" :
+               # should contain exactly 3 columns
+               tmpdict['time'], tmpdict['x'] = np.hsplit(np.loadtxt(filename), 2)  
             elif self.traj_file_format == "xvg" :
 		#create a numpy array with the contents of .xvg file;
                 # should contain exactly 8 columns
