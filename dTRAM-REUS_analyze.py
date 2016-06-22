@@ -582,7 +582,8 @@ if __name__ == "__main__":
     # type=string, action=store is default
     parser = OptionParser()
     parser.add_option('-m', '--metafile', dest='wham_metadata_fname', help='wham metadata file name', default="wham_meta.data")
-    parser.add_option('-w', '--whamfep', dest='wham_fep_fname', help='wham FEP file name', default="wham_fep_histo.dat")
+    parser.add_option('-w', '--whamfep',  dest='wham_fep_fname', help='wham FEP file name', default="wham_fep_histo.dat")
+    parser.add_option('-o', '--outfname', dest='out_file_name',  help='output file name (prefix)', default="pitch")
     parser.add_option('-f', '--trajform', dest='traj_file_format', help='file format of the trajectories (def. plain, xvg)', default="plain")
     parser.add_option('-b', '--binw', dest='bin_width', help='bin width', default=1.0, type=float)
     parser.add_option('-i', '--niter', dest='nruns_max', help='no. iter*1k (=1run)', default=100, type=int)
@@ -695,9 +696,9 @@ if __name__ == "__main__":
     fep_dtram_shift = np.copy(fep_dtram)
     fep_dtram_shift -= fep_dtram_shift.min()
 
-    with open("pitch_dTRAM-FEP_windows.pickle","w") as f : cPickle.dump(dtram_obj.f_K,f)
-    with open("pitch_dTRAM-FEP.pickle","w") as f : cPickle.dump(fep_dtram_shift,f)
-    with open("pitch_dTRAM-FEP.dat","w") as f:
+    with open(opts.out_file_name+"_dTRAM-FEP_windows.pickle","w") as f : cPickle.dump(dtram_obj.f_K,f)
+    with open(opts.out_file_name+"_dTRAM-FEP.pickle","w") as f : cPickle.dump(fep_dtram_shift,f)
+    with open(opts.out_file_name+"_dTRAM-FEP.dat","w") as f:
         for i,c in enumerate(gridpoints):
            line = str(c)+"   "+str(fep_dtram_shift[i])+"\n"
            f.write( line )
@@ -730,4 +731,14 @@ if __name__ == "__main__":
     plt.xlabel( r"$pitch$ [deg]", fontsize=12 )
     plt.ylabel( r"$G$ [kT]", fontsize=12 )
 
-    plt.savefig("pitch_fep_dTRAM_WHAM.png", papertype="letter", dpi=300)
+    plt.savefig(opts.out_file_name+"_dTRAM_WHAM.png", papertype="letter", dpi=300)
+
+    # plotting dTRAM - Jacobi corrected (assuming Pitch-polar coordinates)
+    kT = k_b*sim_data.sims[0]['temperature']
+    plt.plot( gridpoints, fep_dtram_shift + kT*np.log(np.sin(gridpoints/180.0*math.pi)), '-', color='blue', lw=2.0, label="dTRAM Jacobi corrected" )
+
+    plt.legend( loc='upper left', fontsize=10 )
+    plt.xlabel( r"$pitch$ [deg]", fontsize=12 )
+    plt.ylabel( r"$G$ [kT]", fontsize=12 )
+
+    plt.savefig(opts.out_file_name+"_dTRAM_WHAM_JacobiCorr.png", papertype="letter", dpi=300)
