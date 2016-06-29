@@ -55,9 +55,11 @@ class SimFiles:
         except:
             raise IOError, "Can't open/close/read the provided file!"
 
-        self.nsims = len(lines)
-	self.traj_file_format = traj_file_format
+        self.nsims = len(lines)  # corrected when looping through the file records
+        self.traj_file_format = traj_file_format
 
+        # initial thermodynamic state index (1-based -- will fix at end of init)
+        t = self.n_therm_states = 0
         # list of simulation meta-data dictionaries
         self.sims = []
         for line in lines:
@@ -69,12 +71,27 @@ class SimFiles:
                 # kappa is twice that large for Grossfields WHAM code than
                 # in the definition here + convert it to kT units from kJ/mol
                 kappa /= 2.0*k_b*temperature
+                if len(self.sims) > 0:
+                    for sim in self.sims:
+                        same_t_found = False
+                        if x_0 == sim['x0'] and kappa == sim['kappa'] and temperature == sim['temperature']:
+                            t = sim['t']
+                            same_t_found = True
+                            break
+                    if not same_t_found:
+                        self.n_therm_states += 1
+                        t = self.n_therm_states
                 tmpdict = {'fname': fname, 'numpad': numpad,
                            'x0': x_0, 'kappa': kappa,
-                           'temperature': temperature}
+                           'temperature': temperature,
+                           't': t}
                 self.sims.append(tmpdict)
             else:
                 self.nsims -= 1
+        # make the number finally 1-based
+        self.n_therm_states += 1
+        print "Thermo. states: ", self.n_therm_states
+
 
 
     def read_trajs(self, binwidth):
@@ -127,30 +144,31 @@ class SimFiles:
 
         smallest = None
         trajs = []
-        for i, sim in enumerate(self.sims):
+        for sim in self.sims:
             filename = sim['fname']
             tmpdict = {}
             if self.traj_file_format == "plain" :
                # should contain exactly 3 columns
-               tmpdict['time'], tmpdict['x'], tmpdict['b'] = np.hsplit(np.loadtxt(filename), 3)  
+               tmpdict['time'], tmpdict['x'], tmpdict['b'] = np.hsplit(np.loadtxt(filename), 3)
                # convert from kJ/mol to kT units
                tmpdict['b'] /= k_b*sim['temperature']
             elif self.traj_file_format == "plain2" :
-               # should contain exactly 3 columns
-               tmpdict['time'], tmpdict['x'] = np.hsplit(np.loadtxt(filename), 2)  
+               # should contain exactly 2 columns
+               tmpdict['time'], tmpdict['x'] = np.hsplit(np.loadtxt(filename), 2)
             elif self.traj_file_format == "xvg" :
-		#create a numpy array with the contents of .xvg file;
+                # create a numpy array with the contents of .xvg file;
                 # should contain exactly 8 columns
-		tmp_arr = np.array( rxvg.lines_to_list_of_lists(rxvg.read_xvg(filename)) )
-		tmpdict['time'] = tmp_arr[:,0]
-		tmpdict['x'] = tmp_arr[:,4]
+                tmp_arr = np.array( rxvg.lines_to_list_of_lists(rxvg.read_xvg(filename)) )
+                tmpdict['time'] = tmp_arr[:,0]
+                tmpdict['x'] = tmp_arr[:,4]
 
             tmpdict['m'] = discretize(tmpdict['x'])
             # find the smallest state-no
             if  smallest == None or smallest > tmpdict['m'].min():
                 smallest = tmpdict['m'].min()
 
-            tmpdict['t'] = np.ones(tmpdict['m'].shape, dtype=int) * i  # gradually incerment thermodynamic state id
+            # thermodynamic state assumed constant during each simulation
+            tmpdict['t'] = np.ones(tmpdict['m'].shape, dtype=int) * sim['t']
             trajs.append(tmpdict)
 
         # shift the trajs by the smallest state-no (smallest var)
@@ -168,8 +186,8 @@ class SimFiles:
                 return 0.0
             return 0.5*k * ( x - xk )**2
 
-        b_K_i = np.zeros( shape=(self.nsims, gridpoints.shape[0]), dtype=np.float64 )
-        for K in xrange( self.nsims ):
+        b_K_i = np.zeros( shape=(self.n_therm_states, gridpoints.shape[0]), dtype=np.float64 )
+        for K in range( self.n_therm_states ):
             b_K_i[K,:] = umb_pot( gridpoints, self.sims[K]['x0'], self.sims[K]['kappa'] )
         return b_K_i
 
@@ -233,7 +251,7 @@ class SimData(SimFiles):
                     # reduce their index-number by 1
                     traj['m'][sel] -= 1
         else:
-            print "shift_m_indices: Nothing to shift/remove."
+            print "Markov indices: Nothing to shift/remove."
 
     def get_trajs_minmax(self, key='x'):
         """
