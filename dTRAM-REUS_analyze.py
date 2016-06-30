@@ -98,10 +98,16 @@ class SimFiles:
         """
         Reads in Plumed's Pitch files (3columns) or Gromacs pullx files (8 columns)
 
-        File format plain (Plumed):
+        File format plain (Plumed, also suits pitch-n-roll output with change bias->roll):
         ------------
         3 columns : floats
-            Time -- PITCH -- bias
+            Time -- PITCH -- bias (roll for PNR)
+            crashes or unexpected behaviour if different format (e.g. more cols)
+
+        File format pnr_[roll, pitch] (for roll/pitch coordinate from pitch-n-roll code):
+        ------------
+        3 columns : floats
+            Time -- PITCH -- ROLL
             crashes or unexpected behaviour if different format (e.g. more cols)
 
         File format plain2 (Plumed):
@@ -110,7 +116,7 @@ class SimFiles:
 
         File format xvg (Gromacs pullx):
         ------------
-        8 columns : floats
+        8 columns : float
             Time -- x,y,z -- length -- dx,dy,dz
 
         Returns
@@ -161,6 +167,23 @@ class SimFiles:
                 tmp_arr = np.array( rxvg.lines_to_list_of_lists(rxvg.read_xvg(filename)) )
                 tmpdict['time'] = tmp_arr[:,0]
                 tmpdict['x'] = tmp_arr[:,4]
+            elif "pnr" in self.traj_file_format :
+               # should contain exactly 3 columns
+               tmpdict['time'], tmpdict['pitch'], tmpdict['roll'] = np.hsplit(np.loadtxt(filename), 3)
+               # convert from kJ/mol to kT units
+               if "roll" in self.traj_file_format :
+                   tmpdict['x'] = tmpdict['roll']
+               elif "pitch" in self.traj_file_format :
+                   tmpdict['x'] = tmpdict['pitch']
+               else:
+                   raise RuntimeError, "only pitch -or- roll defined in the file format!"
+               # setting bias to 0, as the file format does not contain it anyway
+               # for the case some other method/procedure might need it
+               tmpdict['b'] = tmpdict['x']*0.0
+            else:
+                print "Given file format undefined: ", self.traj_file_format
+                raise RuntimeError
+
 
             tmpdict['m'] = discretize(tmpdict['x'])
             # find the smallest state-no
