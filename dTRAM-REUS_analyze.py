@@ -305,7 +305,7 @@ class SimData(SimFiles):
         return gridpoints
 
 
-    def get_reweighted_C_K_ij( self, lag=10, sliding_window=True ):
+    def get_reweighted_C_K_ij( self, fep, lag=10, sliding_window=True ):
         r"""
         Parameters
         ----------
@@ -313,6 +313,8 @@ class SimData(SimFiles):
             lagtime tau, at which the countmatrix should be evaluated
         sliding_window : boolean (default=True)
             lag is applied by mean of a sliding window or skipping data entries.
+        fep : array
+            FEP of the bias-sampled coordinate
 
         Returns
         -------
@@ -329,8 +331,13 @@ class SimData(SimFiles):
                 if np.all(traj['t'][t:t+lag+1] == K):
                     # here's the change that introduces reweighting
                     # biases already in kT units (converted during reading-in)
-                    weight = weight_switch(math.exp( -traj['b'][t+lag] + traj['b'][t] ), max_weight_thres)
-                    C_K_ij[K, traj['m'][t], traj['m'][t+lag]] += math.exp( -traj['b'][t+lag] + traj['b'][t] )
+                    ### BEWARE: this is probably wrong!
+                    ### REWRITE it - use optimized transition matrix and bias for reweighting
+                    ###              generate just one Cij for all data (i.e. no Ckij)
+                    weight = weight_switch( math.exp(
+                        traj['b'][t+lag] - traj['b'][t] +
+                        fep[traj['m'][t]] - fep[traj['m'][t+lag]] ), max_weight_thres )
+                    C_K_ij[K, traj['m'][t], traj['m'][t+lag]] += weight
                 if sliding_window:
                     t += 1
                 else:
@@ -355,6 +362,14 @@ class SimData(SimFiles):
         T : numpy.ndarray(shape=(M,M))
             Transition prob. mtx that had used already reweighted counts
         """
+        #C_K_ij = self.get_reweighted_C_K_ij(lag, sliding_window)
+        #T = np.zeros(shape=C_K_ij.shape[1:], dtype=np.float)
+        #xij = np.zeros(shape=T.shape   , dtype=np.float)
+        #xi  = np.zeros(shape=T.shape[0], dtype=np.float)
+        #for i in T.shape[0]:
+        #    for j in T.shape[0]:
+        #        xij[i,j] =
+        #        Complete rewrite probably reqd.
         C_K_ij = self.get_reweighted_C_K_ij(lag, sliding_window)
         T = np.zeros(shape=C_K_ij.shape[1:], dtype=np.float)
         for K in range(C_K_ij.shape[0]):
@@ -599,10 +614,16 @@ if __name__ == "__main__":
     if False:
 	    with open("pitch_dTRAM-FEP_windows.pickle","r") as f: winbiases = cPickle.load(f)
 
+<<<<<<< Updated upstream
 	#%%
+=======
+    with open("pitch_dTRAM-FEP_windows.pickle","r") as f: winbiases = cPickle.load(f)
+    with open("pitch_dTRAM-FEP.pickle","r") as f: fep = cPickle.load(f)
+>>>>>>> Stashed changes
 
 	    ckij = sim_data.get_reweighted_C_K_ij()
 
+<<<<<<< Updated upstream
 	#%%
 	    bki = sim_data.gen_harmonic_bias_mtx(gridpoints)
 	    # inserting the windows-biases into the b_K_i matrix
@@ -612,12 +633,21 @@ if __name__ == "__main__":
 		bki[k,:] -= winbiases[k]
 
 	#%%
+=======
+    ckij = sim_data.get_reweighted_C_K_ij(fep)
+
+#%%
+    bki = sim_data.gen_harmonic_bias_mtx(gridpoints)
+    # inserting the windows-biases into the b_K_i matrix
+#%%
+>>>>>>> Stashed changes
 
 	    # an attempt to use dtram for estimating already reweighted count-mtx
 
 	    # turn biases all to 1s, as they are already contained in the reweighted ckij mtx
 	    bki = np.ones(shape=bki.shape, dtype=np.float)
 
+<<<<<<< Updated upstream
 	#%%
 
 	    # this is UGLY!!
@@ -626,6 +656,28 @@ if __name__ == "__main__":
 
 	#%%
 	    dtrammtx.sc_iteration(maxiter=5000, ftol=1.0E-5)
+=======
+#%%
+    ### OMIT this one
+    ### the result of dTRAM shoud not (and does not) depend on this
+    ##for k in range(ckij.shape[0]):
+    ##    bki[k,:] -= winbiases[k]
+
+#%%
+    ### THIS IS BULLSHIT
+    ##ckij *= 1.0/np.exp(-winbiases.max())
+    ##for k in range(ckij.shape[0]):
+    ##    ckij[k,:,:] *= np.exp(-winbiases[k])
+
+#%%
+
+    # this is UGLY!!
+    int_ckij = np.intc(ckij.round())
+    dtrammtx = pytram.dtram_from_matrix(int_ckij, bki, maxiter=5000)
+
+#%%
+    dtrammtx.sc_iteration(maxiter=5000, ftol=1.0E-7)
+>>>>>>> Stashed changes
 
 	#%%
 	    plt.plot(gridpoints, dtrammtx.f_i) #-fep_dtram)
@@ -634,12 +686,23 @@ if __name__ == "__main__":
 
 	#%%
 
+<<<<<<< Updated upstream
 	    T = sim_data.get_reweighted_TransMtx()
 	    p = sim_data.get_reweighted_distribution(T)
 	    plt.plot(gridpoints, p)
 
+=======
+    T = sim_data.get_reweighted_TransMtx()
+    p = sim_data.get_reweighted_distribution(T)
+>>>>>>> Stashed changes
 
 	#%%
+
+    # plot the resulting FEP
+    plt.plot(gridpoints, np.exp(-p) )
+
+
+    #%%
 
 ################################
 #  OLD code continues...
