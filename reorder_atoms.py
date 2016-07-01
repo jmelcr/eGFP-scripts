@@ -88,15 +88,15 @@ if __name__ == '__main__':
 
     # load-in the files
     charmm = pmx.Model(filename="step5_charmm2gmx.pdb")
-    slipids = pmx.Model(filename="confout_memb_slipids.gro")
+    slipids = pmx.Model(filename="confout_scaledSlipidsNVT_nonVS.gro")
 
     #%%
 
     # set the reference POPC residue as the 1st item in the list-of-mols
-    list_POPC_mols = [slipids.residue(1)]
+    list_POPC_mols = [charmm.residue(1)]
 
     # add all other POPC molecules to-be-sorted to the list
-    for mol in charmm.residues:
+    for mol in slipids.residues:
         if mol.resname == 'POPC':
             list_POPC_mols.append(mol)
 
@@ -114,7 +114,9 @@ if __name__ == '__main__':
     # ref-sorted residues/molecules keep the original id (resid)
     # --> can replace the original residues easily
     for mol in refsorted[1:]:
-        charmm.replace_residue(charmm.residue(mol.id), mol)
+        #charmm.replace_residue(charmm.residue(mol.id), mol)
+        slipids.replace_residue(slipids.residue(mol.id), mol)
 
     # write it out in PDB (or GRO) format
-    charmm.write("reordered_Charmm-Slipids_POPC_memb.pdb")
+    #charmm.write("reordered_Charmm-Slipids_POPC_memb.pdb")
+    slipids.write("reordered_Slipids-Charmm_POPC_memb.pdb")
