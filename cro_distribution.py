@@ -24,6 +24,7 @@ import cPickle
 
 # constants
 kT = 2.5775  # kJ/mol*310K
+degtorad = math.pi/180.0
 
 
 def weighted_avg_and_std(values, weights):
@@ -74,7 +75,10 @@ def read_trajs(dfnm, NWINS=None):
     print("Loading-in the PitchTdm trajectories...")
     trajs = []
     for filename in files:
-        trajs.append(np.loadtxt(filename))
+        try:
+            trajs.append(np.loadtxt(filename))
+        except: 
+            print "couldn't load ", filename
 
     return trajs
 
@@ -176,11 +180,22 @@ if __name__ == '__main__':
 
 #%%
     print "average weighted value and std: \n", weighted_avg_and_std(values=tdms_flat, weights=wfs_flat)
+    x = tdms_flat
+    wfs = wfs_flat
+    cos2 = np.cos(x*degtorad)**2
+    cos2avgstd = weighted_avg_and_std(values=cos2, weights=wfs)
+    print "average weighted cos2 and std: \n", cos2avgstd
+    sin2 = np.sin(x*degtorad)**2
+    sin2avgstd = weighted_avg_and_std(values=sin2, weights=wfs)
+    print "average weighted sin2 and std: \n", sin2avgstd
+    print "dichroic ratio r: \n", sin2avgstd[0]/cos2avgstd[0]
 
     hist  = np.histogram(tdms_flat, weights=wfs_flat, bins=90, range=(0.0, 90.0), density=True)
+    with open("tdm_WHAM-distrib_hist.pickle","w") as f: cPickle.dump(hist, f)
 
     plt.xlabel("tdm orientation [deg]")
     plt.ylabel("probability density")
     binwidth = hist[1][1] - hist[1][0]
     plt.plot(hist[1][:-1]+binwidth*0.5, hist[0], lw=2.0, color='black')
     plt.savefig("tdm_WHAM-distrib.png", papertype="letter", dpi=300)
+
