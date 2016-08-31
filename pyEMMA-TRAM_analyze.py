@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """
- dTRAM analysis on the SPECIFIC REUS simulations of xxeGFPs
+ TRAM/dTRAM analysis of a very SPECIFIC REUS/MSM simulations of xxeGFPs
  Beware: this script might still be a bit too specific to this task.
 
  ------------------------------------------------------------
- Made by Joe,  Last edit 2016/03/15
+ Made by Joe,  Last edit 2016/08/31
 ------------------------------------------------------------
  input: Plumed's pitch files,
         MetaData in Grossfield's-WHAM format
@@ -703,7 +703,10 @@ if __name__ == "__main__":
     #md_trajs  = [ sim['x'] for sim in sim_data.trajs[:] ]
     md_ttrajs = [ np.ravel(sim['t']) for sim in sim_data.trajs[:] ]
     md_dtrajs = [ np.ravel(sim['m']) for sim in sim_data.trajs[:] ]
-    md_bias   = [ sim['m']*0.0 for sim in sim_data.trajs[:] ]
+    if 'b' in sim_data.trajs[0].keys():
+        md_bias   = [ sim['b'] for sim in sim_data.trajs[:] ]
+    else:
+        md_bias   = [ np.zeros(shape=sim['m'].shape) for sim in sim_data.trajs[:] ]
     #us_dtrajs = pyemma.coordinates.assign_to_centers(data=us_trajs, centers=us_centres) # biased discrete trajectories
     #md_dtrajs = pyemma.coordinates.assign_to_centers(data=md_trajs, centers=centers) # unbiased discrete trajectories
 
