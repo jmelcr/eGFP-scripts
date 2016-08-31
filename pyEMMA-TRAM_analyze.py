@@ -18,13 +18,22 @@
 
 from pytram import TRAMData, dtram # this is the dTRAM API function
 import pytram
+from pyemma.thermo import estimate_umbrella_sampling as tramus
+import pyemma
 import numpy as np
-import scipy
+import scipy, math
 import matplotlib.pyplot as plt
 import cPickle
 from optparse import OptionParser
+#import IPython
+
+try:
+    import read_xvg_calc_mean as rxvg
+except:
+    print "Couldn't read XVG-reading library, can't process Gromacs pullx.xvg files!"
 
 k_b = 0.0083144621  #kJ/Mol*K
+max_weight_thres = math.exp(2.0)
 
 
 #%%
@@ -38,7 +47,7 @@ class SimFiles:
 
     See the code for further details
     """
-    def __init__(self, fname):
+    def __init__(self, fname, traj_file_format="plain"):
         if not isinstance(fname, str):
             raise RuntimeError, "provided filename is not a string!"
         self.fname = fname
@@ -49,8 +58,11 @@ class SimFiles:
         except:
             raise IOError, "Can't open/close/read the provided file!"
 
-        self.nsims = len(lines)
+        self.nsims = len(lines)  # corrected when looping through the file records
+        self.traj_file_format = traj_file_format
 
+        # initial thermodynamic state index (1-based -- will fix at end of init)
+        t = self.n_therm_states = 0
         # list of simulation meta-data dictionaries
         self.sims = []
         for line in lines:
@@ -62,23 +74,53 @@ class SimFiles:
                 # kappa is twice that large for Grossfields WHAM code than
                 # in the definition here + convert it to kT units from kJ/mol
                 kappa /= 2.0*k_b*temperature
+                if len(self.sims) > 0:
+                    for sim in self.sims:
+                        same_t_found = False
+                        if x_0 == sim['x0'] and kappa == sim['kappa'] and temperature == sim['temperature']:
+                            t = sim['t']
+                            same_t_found = True
+                            break
+                    if not same_t_found:
+                        self.n_therm_states += 1
+                        t = self.n_therm_states
                 tmpdict = {'fname': fname, 'numpad': numpad,
                            'x0': x_0, 'kappa': kappa,
-                           'temperature': temperature}
+                           'temperature': temperature,
+                           't': t}
                 self.sims.append(tmpdict)
             else:
                 self.nsims -= 1
+        # make the number finally 1-based
+        self.n_therm_states += 1
+        print "Thermo. states: ", self.n_therm_states
+
 
 
     def read_trajs(self, binwidth):
         """
-        Reads in Plumed's Pitch files
+        Reads in Plumed's Pitch files (3columns) or Gromacs pullx files (8 columns)
 
-        File format:
+        File format plain (Plumed, also suits pitch-n-roll output with change bias->roll):
         ------------
         3 columns : floats
-            Time -- PITCH -- bias
+            Time -- PITCH -- bias (roll for PNR)
             crashes or unexpected behaviour if different format (e.g. more cols)
+
+        File format pnr_[roll, pitch] (for roll/pitch coordinate from pitch-n-roll code):
+        ------------
+        3 columns : floats
+            Time -- PITCH -- ROLL
+            crashes or unexpected behaviour if different format (e.g. more cols)
+
+        File format plain2 (Plumed):
+        ------------
+	2 columns (otherwise same)
+
+        File format xvg (Gromacs pullx):
+        ------------
+        8 columns : float
+            Time -- x,y,z -- length -- dx,dy,dz
 
         Returns
         -------
@@ -111,15 +153,48 @@ class SimFiles:
 
         smallest = None
         trajs = []
-        for i, sim in enumerate(self.sims):
+        for sim in self.sims:
             filename = sim['fname']
             tmpdict = {}
-            tmpdict['time'], tmpdict['x'], tmpdict['b'] = np.hsplit(np.loadtxt(filename), 3)  # should contain exactly 3 columns
+            if self.traj_file_format == "plain" :
+               # should contain exactly 3 columns
+               tmpdict['time'], tmpdict['x'], tmpdict['b'] = np.hsplit(np.loadtxt(filename), 3)
+               # convert from kJ/mol to kT units
+               tmpdict['b'] /= k_b*sim['temperature']
+            elif self.traj_file_format == "plain2" :
+               # should contain exactly 2 columns
+               tmpdict['time'], tmpdict['x'] = np.hsplit(np.loadtxt(filename), 2)
+            elif self.traj_file_format == "xvg" :
+                # create a numpy array with the contents of .xvg file;
+                # should contain exactly 8 columns
+                tmp_arr = np.array( rxvg.lines_to_list_of_lists(rxvg.read_xvg(filename)) )
+                tmpdict['time'] = tmp_arr[:,0]
+                tmpdict['x'] = tmp_arr[:,4]
+            elif "pnr" in self.traj_file_format :
+               # should contain exactly 3 columns
+               tmpdict['time'], tmpdict['pitch'], tmpdict['roll'] = np.hsplit(np.loadtxt(filename), 3)
+               # convert from kJ/mol to kT units
+               if "roll" in self.traj_file_format :
+                   tmpdict['x'] = tmpdict['roll']
+               elif "pitch" in self.traj_file_format :
+                   tmpdict['x'] = tmpdict['pitch']
+               else:
+                   raise RuntimeError, "only pitch -or- roll defined in the file format!"
+               # setting bias to 0, as the file format does not contain it anyway
+               # for the case some other method/procedure might need it
+               tmpdict['b'] = tmpdict['x']*0.0
+            else:
+                print "Given file format undefined: ", self.traj_file_format
+                raise RuntimeError
+
+
             tmpdict['m'] = discretize(tmpdict['x'])
             # find the smallest state-no
             if  smallest == None or smallest > tmpdict['m'].min():
                 smallest = tmpdict['m'].min()
-            tmpdict['t'] = np.ones(tmpdict['m'].shape, dtype=int) * i
+
+            # thermodynamic state assumed constant during each simulation
+            tmpdict['t'] = np.ones(tmpdict['m'].shape, dtype=int) * sim['t']
             trajs.append(tmpdict)
 
         # shift the trajs by the smallest state-no (smallest var)
@@ -137,8 +212,8 @@ class SimFiles:
                 return 0.0
             return 0.5*k * ( x - xk )**2
 
-        b_K_i = np.zeros( shape=(self.nsims, gridpoints.shape[0]), dtype=np.float64 )
-        for K in xrange( self.nsims ):
+        b_K_i = np.zeros( shape=(self.n_therm_states, gridpoints.shape[0]), dtype=np.float64 )
+        for K in range( self.n_therm_states ):
             b_K_i[K,:] = umb_pot( gridpoints, self.sims[K]['x0'], self.sims[K]['kappa'] )
         return b_K_i
 
@@ -154,8 +229,8 @@ class SimData(SimFiles):
 
     See the code for further details
     """
-    def __init__(self, fname, bin_width, verbose=False):
-        SimFiles.__init__(self, fname)
+    def __init__(self, fname, bin_width, verbose=False, traj_file_format="plain"):
+        SimFiles.__init__(self, fname, traj_file_format)
         if isinstance(bin_width, float):
             self.verbose = verbose
             self.bin_width = bin_width
@@ -202,7 +277,7 @@ class SimData(SimFiles):
                     # reduce their index-number by 1
                     traj['m'][sel] -= 1
         else:
-            print "shift_m_indices: Nothing to shift/remove."
+            print "Markov indices: Nothing to shift/remove."
 
     def get_trajs_minmax(self, key='x'):
         """
@@ -280,6 +355,111 @@ class SimData(SimFiles):
             gridpoints = gridpoints[sel]
 
         return gridpoints
+
+    def get_reweighted_C_K_ij( self, lag=10, sliding_window=True ):
+        r"""
+        Parameters
+        ----------
+        lag : int
+            lagtime tau, at which the countmatrix should be evaluated
+        sliding_window : boolean (default=True)
+            lag is applied by mean of a sliding window or skipping data entries.
+
+        Returns
+        -------
+        C_K_ij : numpy.ndarray(shape=(T,M,M))
+            reweighted count matrices C_ij at each termodynamic state K
+        """
+        C_K_ij = np.zeros(
+            shape=(self.n_therm_states, self.n_markov_states, self.n_markov_states),
+            dtype=np.float)
+        for traj in self.trajs:
+            t = 0
+            while t < traj['m'].shape[0]-lag:
+                K = traj['t'][t]
+                if np.all(traj['t'][t:t+lag+1] == K):
+                    # here's the change that introduces reweighting
+                    # biases already in kT units (converted during reading-in)
+                    weight = weight_switch(math.exp( -traj['b'][t+lag] + traj['b'][t] ), max_weight_thres)
+                    C_K_ij[K, traj['m'][t], traj['m'][t+lag]] += math.exp( -traj['b'][t+lag] + traj['b'][t] )
+                if sliding_window:
+                    t += 1
+                else:
+                    t += lag
+        return C_K_ij
+
+    def get_reweighted_TransMtx( self, lag=10, sliding_window=True ):
+        r"""
+        provides Transition matrix (non-reversible estimator,
+        violates detailed balance)
+        using already reweighted countMtx (calls the method)
+
+        Parameters
+        ----------
+        lag : int
+            lagtime tau, at which the countmatrix should be evaluated
+        sliding_window : boolean (default=True)
+            lag is applied by mean of a sliding window or skipping data entries.
+
+        Returns
+        -------
+        T : numpy.ndarray(shape=(M,M))
+            Transition prob. mtx that had used already reweighted counts
+        """
+        C_K_ij = self.get_reweighted_C_K_ij(lag, sliding_window)
+        T = np.zeros(shape=C_K_ij.shape[1:], dtype=np.float)
+        for K in range(C_K_ij.shape[0]):
+            for i in range(C_K_ij.shape[1]):
+                for j in range(C_K_ij.shape[2]):
+                    if C_K_ij[K,i,j] == 0.0 :
+                        T[i,j] += 0.0
+                    else:
+                        T[i,j] += C_K_ij[K,i,j]/C_K_ij[K,i,:].sum()
+        # divide by K, no. therm. states to complete the averageing above
+        T /= C_K_ij.shape[0]
+        return T
+
+    def get_reweighted_distribution( self, T ):
+        r"""
+        provides Transition matrix (non-reversible estimator,
+        violates detailed balance)
+        using already reweighted countMtx (calls the method)
+
+        Parameters
+        ----------
+        T : numpy.ndarray(shape=(M,M))
+            Transition prob. mtx that had used already reweighted counts
+
+        Returns
+        -------
+        p : numpy.ndarray(shape=(M))
+            probability distribution based on
+            already reweighted Trans mtx T and reweighted counts
+        """
+        p = np.zeros(shape=T.shape[0], dtype=np.float)
+        # this shape might be a small dirty hack
+        temp = np.zeros(shape=T.shape, dtype=np.float)
+        ind = 3
+        for i in range(temp.shape[0]):
+            for j in range(temp.shape[0]):
+                if abs(T[i,j])<=1.0E-5:
+                    temp[i,j] = 0.0
+                else:
+                    temp[i,j] = T[j, i]/T[i, j]
+
+        for i in range(temp.shape[0]):
+            p[i] = np.average(temp[:,i])
+
+        # normalize p
+        #p /= p.sum()
+        print "This is a wrong estimator!"
+        return p
+
+
+
+##########################
+#  Copied from dTRAM code
+##########################
 
     def get_C_K_ij( self, lag=10, sliding_window=True ):
         r"""
@@ -419,16 +599,25 @@ def weight_switch(vals, thres):
 
     Returns
     -------
-    weight_switch : np.array
+    weight_switch : np.array, or just float
         of switched/corrected values (floats)
     """
+    def switch_func(value):
+        " Switching function with exp decay "
+        delta = abs(value-thres)
+        return thres + delta*math.exp(-delta/thres)
+
     j=0
-    for i in xrange(vals.shape[0]):
-        if vals[i] > thres:
-            delta = abs(vals[i]-thres)
-            vals[i] = thres + delta*math.exp(-delta/thres)
-            j += 1
-    print j, "values out of", vals.shape[0], "(", j/vals.shape[0]*100.0, "%) were above threshold", thres, ".\n Their weights were reduced exponentially. "
+    if isinstance(vals, np.ndarray):
+        for i in xrange(vals.shape[0]):
+            if vals[i] > thres:
+                vals[i] = switch_func(vals[i])
+                j += 1
+        print j, "values out of", vals.shape[0], "(", j/vals.shape[0]*100.0, "%) were above threshold", thres, ".\n Their weights were reduced exponentially. "
+    elif isinstance(vals, float):
+        vals = switch_func(vals)
+    else:
+        print "Wrong input type for values (vals)!"
     return vals
 #%%
 
@@ -437,36 +626,100 @@ if __name__ == "__main__":
     # type=string, action=store is default
     parser = OptionParser()
     parser.add_option('-m', '--metafile', dest='wham_metadata_fname', help='wham metadata file name', default="wham_meta.data")
-    parser.add_option('-w', '--whamfep', dest='wham_fep_fname', help='wham FEP file name', default="wham_fep_histo.dat")
+    parser.add_option('-w', '--whamfep',  dest='wham_fep_fname', help='wham FEP file name', default="wham_fep_histo.dat")
+    parser.add_option('-o', '--outfname', dest='out_file_name',  help='output file name (prefix)', default="pitch")
+    parser.add_option('-f', '--trajform', dest='traj_file_format', help='file format of the trajectories (def. plain, xvg)', default="plain")
     parser.add_option('-b', '--binw', dest='bin_width', help='bin width', default=1.0, type=float)
     parser.add_option('-i', '--niter', dest='nruns_max', help='no. iter*1k (=1run)', default=100, type=int)
     parser.add_option('-l', '--lag', dest='lag_time', help='lag time (in units of frame-rec-rate) for dTRAM c_k_i_j kinetic mtx', default=10, type=int)
-    parser.add_option('-t', '--ftol', dest='f_toler_dtram', help='convergence tolerance for dTRAM iterative sc-procedure', default=1.0E-8, type=float)
+    parser.add_option('-t', '--ftol', dest='f_toler_dtram', help='convergence tolerance for dTRAM iterative sc-procedure', default=1.0E-10, type=float)
     opts, args = parser.parse_args()
 
     #read-in the simulations' metadata in the Grossfield's WHAM format
     # and the trajectories in the PLUMED's format
-    sim_data = SimData(opts.wham_metadata_fname, opts.bin_width)
+    sim_data = SimData(opts.wham_metadata_fname, opts.bin_width, traj_file_format=opts.traj_file_format)
 
     # just an alias, gridpoints are saved as an attribute in the SimData obj
     gridpoints = sim_data.gridpoints
 
 #%%
 
-    with open("pitch_dTRAM-FEP_windows.pickle","r") as f: winbiases = cPickle.load(f)
+######################################
+#  C_K_ij trans-mtx Reweighting part
+######################################
 
-#%%
+    if False:
+	    with open("pitch_dTRAM-FEP_windows.pickle","r") as f: winbiases = cPickle.load(f)
 
-    ckij = sim_data.get_C_K_ij()
+	#%%
 
-#%%
-    bki = sim_data.gen_harmonic_bias_mtx(gridpoints)
-    # inserting the windows-biases into the b_K_i matrix
-    for k in range(ckij.shape[0]):
-        bki[k,:] -= winbiases[k]
+	    ckij = sim_data.get_reweighted_C_K_ij()
 
-#%%
+	#%%
+	    bki = sim_data.gen_harmonic_bias_mtx(gridpoints)
+	    # inserting the windows-biases into the b_K_i matrix
+	#%%
+	    # the result of dTRAM shoud not (and does not) depend on this
+	    for k in range(ckij.shape[0]):
+		bki[k,:] -= winbiases[k]
 
+	#%%
+
+	    # an attempt to use dtram for estimating already reweighted count-mtx
+
+	    # turn biases all to 1s, as they are already contained in the reweighted ckij mtx
+	    bki = np.ones(shape=bki.shape, dtype=np.float)
+
+	#%%
+
+	    # this is UGLY!!
+	    int_ckij = np.intc(ckij.round())
+	    dtrammtx = pytram.dtram_from_matrix(int_ckij,bki, maxiter=5000)
+
+	#%%
+	    dtrammtx.sc_iteration(maxiter=5000, ftol=1.0E-5)
+
+	#%%
+	    plt.plot(gridpoints, dtrammtx.f_i) #-fep_dtram)
+	    #plt.savefig("figtest1.png",dpi=200)
+	    plt.show()
+
+	#%%
+
+	    T = sim_data.get_reweighted_TransMtx()
+	    p = sim_data.get_reweighted_distribution(T)
+	    plt.plot(gridpoints, p)
+
+
+	#%%
+
+################################
+#  OLD code continues...
+################################
+
+    #IPython.embed()
+    #us_centres = [ sim['x0'] for sim in sim_data.sims[:] ]
+    #us_force_constants = [ sim['kappa'] for sim in sim_data.sims[:] ]
+    #md_trajs  = [ sim['x'] for sim in sim_data.trajs[:] ]
+    md_ttrajs = [ np.ravel(sim['t']) for sim in sim_data.trajs[:] ]
+    md_dtrajs = [ np.ravel(sim['m']) for sim in sim_data.trajs[:] ]
+    md_bias   = [ sim['m']*0.0 for sim in sim_data.trajs[:] ]
+    #us_dtrajs = pyemma.coordinates.assign_to_centers(data=us_trajs, centers=us_centres) # biased discrete trajectories
+    #md_dtrajs = pyemma.coordinates.assign_to_centers(data=md_trajs, centers=centers) # unbiased discrete trajectories
+
+    # TRAM approach
+    tram = pyemma.thermo.tram(
+    ttrajs=md_ttrajs, dtrajs=md_dtrajs,
+    bias=md_bias,
+    lag=opts.lag_time,
+    maxiter=15000, maxerr=opts.f_toler_dtram, save_convergence_info=10,
+    init='mbar', init_maxiter=2000, init_maxerr=opts.f_toler_dtram)
+    #tram_obj = tram[4]  # same abbreviation as in Jupyter notebook - prbably works with the estimate_... thing
+    #estimate_umbrella_sampling(
+    #us_trajs, us_dtrajs, us_centres, us_force_constants,
+
+
+    # dTRAM approach
     dtramdata = TRAMData( sim_data.trajs,
     b_K_i=sim_data.gen_harmonic_bias_mtx(gridpoints=sim_data.gridpoints) )
 
@@ -509,10 +762,14 @@ if __name__ == "__main__":
     fep_dtram = dtram_obj.f_i
     fep_dtram_shift = np.copy(fep_dtram)
     fep_dtram_shift -= fep_dtram_shift.min()
+    #TRAM data
+    fep_tram = tram.free_energies
+    fep_tram_shift = np.copy(fep_tram)
+    fep_tram_shift -= fep_tram_shift.min()
 
-    with open("pitch_dTRAM-FEP_windows.pickle","w") as f : cPickle.dump(dtram_obj.f_K,f)
-    with open("pitch_dTRAM-FEP.pickle","w") as f : cPickle.dump(fep_dtram_shift,f)
-    with open("pitch_dTRAM-FEP.dat","w") as f:
+    with open(opts.out_file_name+"_dTRAM-FEP_windows.pickle","w") as f : cPickle.dump(dtram_obj.f_K,f)
+    with open(opts.out_file_name+"_dTRAM-FEP.pickle","w") as f : cPickle.dump(fep_dtram_shift,f)
+    with open(opts.out_file_name+"_dTRAM-FEP.dat","w") as f:
         for i,c in enumerate(gridpoints):
            line = str(c)+"   "+str(fep_dtram_shift[i])+"\n"
            f.write( line )
@@ -529,17 +786,32 @@ if __name__ == "__main__":
         cnz_wham = wham_data[:,0]
         kT = k_b*sim_data.sims[0]['temperature']
         fep_wham = wham_data[:,1]/kT # scale by kT
-        fep_wham_err1 =  wham_data[:,2]/kT + fep_wham
-        fep_wham_err2 = -wham_data[:,2]/kT + fep_wham
         plt.plot( cnz_wham, fep_wham, '-', color='green', lw=2.0, label="WHAM" )
-        plt.fill_between( cnz_wham, fep_wham_err1, fep_wham_err2, color='green', alpha=0.2)
+	try:
+		fep_wham_err1 =  wham_data[:,2]/kT + fep_wham
+		fep_wham_err2 = -wham_data[:,2]/kT + fep_wham
+		plt.fill_between( cnz_wham, fep_wham_err1, fep_wham_err2, color='green', alpha=0.2)
+	except:
+		print "Couldn't read-in the errorbars for WHAM-data."
     except:
         print "Wham data missing or just something wrong happened in the process. Look into the code, lad. "
 
     plt.plot( gridpoints, fep_dtram_shift, '-', color='black', lw=2.0, label="dTRAM" )
+    plt.plot( gridpoints , fep_tram_shift, '--', color='red'  , lw=1.0, label="TRAM pyEMMA")
 
     plt.legend( loc='upper left', fontsize=10 )
     plt.xlabel( r"$pitch$ [deg]", fontsize=12 )
     plt.ylabel( r"$G$ [kT]", fontsize=12 )
 
-    plt.savefig("pitch_fep_dTRAM_WHAM.png", papertype="letter", dpi=300)
+    plt.savefig(opts.out_file_name+"_pyEMMA-TRAM_dTRAM.png", papertype="letter", dpi=300)
+
+    # plotting dTRAM - Jacobi corrected (assuming Pitch-polar coordinates)
+    kT = k_b*sim_data.sims[0]['temperature']
+    plt.plot( gridpoints, fep_dtram_shift + kT*np.log(np.sin(gridpoints/180.0*math.pi)), '-', color='blue', lw=2.0, label="dTRAM Jacobi corrected" )
+    plt.plot( gridpoints,  fep_tram_shift + kT*np.log(np.sin(gridpoints/180.0*math.pi)), '--', color='red' , lw=1.0, label="pyEMMA TRAM Jacobi corrected" )
+
+    plt.legend( loc='upper left', fontsize=10 )
+    plt.xlabel( r"$pitch$ [deg]", fontsize=12 )
+    plt.ylabel( r"$G$ [kT]", fontsize=12 )
+
+    plt.savefig(opts.out_file_name+"_pyEMMA-TRAM_dTRAM_JacobiCorr.png", papertype="letter", dpi=300)
