@@ -18,8 +18,8 @@
 
 from pytram import TRAMData, dtram # this is the dTRAM API function
 import pytram
-from pyemma.thermo import estimate_umbrella_sampling as tramus
 import pyemma
+import msmtools
 import numpy as np
 import scipy, math
 import matplotlib.pyplot as plt
@@ -631,8 +631,9 @@ if __name__ == "__main__":
     parser.add_option('-f', '--trajform', dest='traj_file_format', help='file format of the trajectories (def. plain, xvg)', default="plain")
     parser.add_option('-b', '--binw', dest='bin_width', help='bin width', default=1.0, type=float)
     parser.add_option('-i', '--niter', dest='nruns_max', help='no. iter*1k (=1run)', default=100, type=int)
-    parser.add_option('-l', '--lag', dest='lag_time', help='lag time (in units of frame-rec-rate) for dTRAM c_k_i_j kinetic mtx', default=10, type=int)
-    parser.add_option('-t', '--ftol', dest='f_toler_dtram', help='convergence tolerance for dTRAM iterative sc-procedure', default=1.0E-10, type=float)
+    parser.add_option('-l', '--lag', dest='lag_time', help='lag time (in units of frame-rec-rate) for dTRAM c_k_i_j kinetic mtx', default=1000, type=int)
+    parser.add_option('-t', '--ftol', dest='f_toler_dtram', help='convergence tolerance for dTRAM iterative sc-procedure', default=1.0E-6, type=float)
+    parser.add_option('-e', '--errestim', dest='err_estim', help='number of bootstrapping iterations (randomized trajs) for error estimation', default=10, type=int)
     opts, args = parser.parse_args()
 
     #read-in the simulations' metadata in the Grossfield's WHAM format
@@ -643,59 +644,6 @@ if __name__ == "__main__":
     gridpoints = sim_data.gridpoints
 
 #%%
-
-######################################
-#  C_K_ij trans-mtx Reweighting part
-######################################
-
-    if False:
-	    with open("pitch_dTRAM-FEP_windows.pickle","r") as f: winbiases = cPickle.load(f)
-
-	#%%
-
-	    ckij = sim_data.get_reweighted_C_K_ij()
-
-	#%%
-	    bki = sim_data.gen_harmonic_bias_mtx(gridpoints)
-	    # inserting the windows-biases into the b_K_i matrix
-	#%%
-	    # the result of dTRAM shoud not (and does not) depend on this
-	    for k in range(ckij.shape[0]):
-		bki[k,:] -= winbiases[k]
-
-	#%%
-
-	    # an attempt to use dtram for estimating already reweighted count-mtx
-
-	    # turn biases all to 1s, as they are already contained in the reweighted ckij mtx
-	    bki = np.ones(shape=bki.shape, dtype=np.float)
-
-	#%%
-
-	    # this is UGLY!!
-	    int_ckij = np.intc(ckij.round())
-	    dtrammtx = pytram.dtram_from_matrix(int_ckij,bki, maxiter=5000)
-
-	#%%
-	    dtrammtx.sc_iteration(maxiter=5000, ftol=1.0E-5)
-
-	#%%
-	    plt.plot(gridpoints, dtrammtx.f_i) #-fep_dtram)
-	    #plt.savefig("figtest1.png",dpi=200)
-	    plt.show()
-
-	#%%
-
-	    T = sim_data.get_reweighted_TransMtx()
-	    p = sim_data.get_reweighted_distribution(T)
-	    plt.plot(gridpoints, p)
-
-
-	#%%
-
-################################
-#  OLD code continues...
-################################
 
     #IPython.embed()
     #us_centres = [ sim['x0'] for sim in sim_data.sims[:] ]
@@ -721,6 +669,55 @@ if __name__ == "__main__":
     #estimate_umbrella_sampling(
     #us_trajs, us_dtrajs, us_centres, us_force_constants,
 
+#%%
+    # MBAR approach
+    mbar = pyemma.thermo.mbar(
+    ttrajs=md_ttrajs, dtrajs=md_dtrajs,
+    bias=md_bias,
+    maxiter=15000, maxerr=opts.f_toler_dtram, save_convergence_info=10)
+
+#%%
+    # TRAM error estimate
+    import msmtools
+    md_dtrajs_bootstrapped = []
+    for i in range(opts.err_estim):
+        md_dtrajs_bootstrapped.append(msmtools.estimation.bootstrap_trajectories(md_dtrajs, 10000))  #opts.lag_time))
+
+#%%
+
+    tram_bootstrapped_objs = []
+    for i,dtraj in enumerate(md_dtrajs_bootstrapped):
+        # should be fine at least for pure MSM (not sure about biased simulations and sims that change thermo state)
+        print "Bootstrapping traj no.", i
+        ttraj = [ np.zeros(shape=part.shape, dtype=int)   for part in dtraj ]
+        bias  = [ np.zeros(shape=part.shape+(1,), dtype=float) for part in dtraj ]  # the "+(1,) is a workaround that made it working, but I don't uderstand it completely
+        tram_obj = pyemma.thermo.tram(
+        dtrajs=dtraj,
+        bias=bias, ttrajs=ttraj,
+        lag=opts.lag_time,
+        maxiter=15000, maxerr=opts.f_toler_dtram)
+        tram_bootstrapped_objs.append(tram_obj)
+
+
+#%%
+    # quickly plot the free energies from the original and bootstrap-randomized trajs
+    plt.plot(tram.free_energies, lw=2, color='black')
+    for tram_obj in tram_bootstrapped_objs:
+        plt.plot(tram_obj.free_energies)
+
+#%%
+    # get the standard error
+    mean = tram.free_energies.mean()
+    std_sq_sum = np.zeros(shape=tram.free_energies.shape)
+    for tram_obj in tram_bootstrapped_objs:
+        diff = tram_obj.free_energies.mean() - mean
+        active_set = tram_obj.active_set
+        std_sq = np.square( tram_obj.free_energies[active_set-active_set.min()] - tram.free_energies[active_set] - diff )
+        std_sq_sum[active_set] += std_sq[active_set-active_set.min()]
+    # make average and sqrt to get standard error
+    tram_std_err = np.sqrt(std_sq_sum/len(tram_bootstrapped_objs))
+
+#%%
 
     # dTRAM approach
     dtramdata = TRAMData( sim_data.trajs,
@@ -769,6 +766,10 @@ if __name__ == "__main__":
     fep_tram = tram.free_energies
     fep_tram_shift = np.copy(fep_tram)
     fep_tram_shift -= fep_tram_shift.min()
+    #mbar data
+    fep_mbar = mbar.free_energies
+    fep_mbar_shift = np.copy(fep_mbar)
+    fep_mbar_shift -= fep_mbar_shift.min()
 
     with open(opts.out_file_name+"_dTRAM-FEP_windows.pickle","w") as f : cPickle.dump(dtram_obj.f_K,f)
     with open(opts.out_file_name+"_dTRAM-FEP.pickle","w") as f : cPickle.dump(fep_dtram_shift,f)
@@ -779,28 +780,17 @@ if __name__ == "__main__":
 
 
 
-    # In[46]:
+#%%
 
-    print "Plotting dTRAM, and WHAM data if present ... "
-
-    # Load the result from WHAM: (generated with the same set and with the same converg. criterion 1.0E-6, 90 bins ..)
-    try:
-        wham_data = np.loadtxt(opts.wham_fep_fname)
-        cnz_wham = wham_data[:,0]
-        kT = k_b*sim_data.sims[0]['temperature']
-        fep_wham = wham_data[:,1]/kT # scale by kT
-        plt.plot( cnz_wham, fep_wham, '-', color='green', lw=2.0, label="WHAM" )
-	try:
-		fep_wham_err1 =  wham_data[:,2]/kT + fep_wham
-		fep_wham_err2 = -wham_data[:,2]/kT + fep_wham
-		plt.fill_between( cnz_wham, fep_wham_err1, fep_wham_err2, color='green', alpha=0.2)
-	except:
-		print "Couldn't read-in the errorbars for WHAM-data."
-    except:
-        print "Wham data missing or just something wrong happened in the process. Look into the code, lad. "
+    print "Plotting free energies ... "
 
     plt.plot( gridpoints, fep_dtram_shift, '-', color='black', lw=2.0, label="dTRAM" )
-    plt.plot( gridpoints , fep_tram_shift, '--', color='red'  , lw=1.0, label="TRAM pyEMMA")
+    plt.plot( gridpoints , fep_mbar_shift, '--', color='grey', lw=2.0, label="MBAR pyEMMA")
+    plt.plot( gridpoints , fep_tram_shift, '--', color='red',  lw=1.0, label="TRAM pyEMMA")
+
+    fep_tram_err1 =  tram_std_err + fep_tram_shift
+    fep_tram_err2 = -tram_std_err + fep_tram_shift
+    plt.fill_between( gridpoints, fep_tram_err1, fep_tram_err2, color='orange', alpha=0.2)
 
     plt.legend( loc='upper left', fontsize=10 )
     plt.xlabel( r"$pitch$ [deg]", fontsize=12 )
@@ -808,6 +798,7 @@ if __name__ == "__main__":
 
     plt.savefig(opts.out_file_name+"_pyEMMA-TRAM_dTRAM.png", papertype="letter", dpi=300)
 
+#%%
     # plotting dTRAM - Jacobi corrected (assuming Pitch-polar coordinates)
     kT = k_b*sim_data.sims[0]['temperature']
     plt.plot( gridpoints, fep_dtram_shift + kT*np.log(np.sin(gridpoints/180.0*math.pi)), '-', color='blue', lw=2.0, label="dTRAM Jacobi corrected" )
