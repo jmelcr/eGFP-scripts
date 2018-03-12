@@ -52,23 +52,46 @@ if __name__ == '__main__':
     print("Loading-in the histogram")
     fep = np.loadtxt(dfnm)
     # weight factors, assuming fep in kT
-    wfs = np.exp(-fep[:,1])
+    y = wfs = np.exp(-fep[:,1])
     x = fep[:,0]
+    fep_err_estim = 0.9999999999  # error-bar estimate of FEP profile in kT
 
 #%%
-    print "average weighted value and std: \n", weighted_avg_and_std(values=x, weights=wfs)
-    cos2 = np.cos(x*degtorad)**2
-    cos2avgstd = weighted_avg_and_std(values=cos2, weights=wfs)
-    print "average weighted cos2 and std: \n", cos2avgstd
-    sin2 = np.sin(x*degtorad)**2
-    sin2avgstd = weighted_avg_and_std(values=sin2, weights=wfs)
-    print "average weighted sin2 and std: \n", sin2avgstd
-    print "dichroic ratio r: \n", sin2avgstd[0]/cos2avgstd[0]
+    ### 1PPM  ###
+    # intenzities projected onto z & y axes with 1PPM (I~|dip*E|^2)
+    rho_z = np.trapz(y*np.power(np.cos(np.deg2rad(x)), 2), x) *2.0 *np.pi
+    rho_y = np.trapz(y*np.power(np.sin(np.deg2rad(x)), 2), x)      *np.pi
+    print "\n1PPM\ndichr. ratio r = Rho_z / Rho_y = {} / {} = {} \nlog_2(r) = {}".format(rho_z, rho_y, rho_z/rho_y, math.log(rho_z/rho_y, 2))
+    # intenzities projected onto z & y axes with 1PPM (I~|dip*E|^2)
+    rho_z = np.trapz((y*np.exp(-fep_err_estim*np.cos(np.deg2rad(2.0*x))))*np.power(np.cos(np.deg2rad(x)), 2), x) *2.0 *np.pi
+    rho_y = np.trapz((y*np.exp(-fep_err_estim*np.cos(np.deg2rad(2.0*x))))*np.power(np.sin(np.deg2rad(x)), 2), x)      *np.pi
+    print "\nError estimate using FEP+{}*cos(2x)\n1PPM\ndichr. ratio r = Rho_z / Rho_y = {} / {} = {} \nlog_2(r) = {}".format(fep_err_estim, rho_z, rho_y, rho_z/rho_y, math.log(rho_z/rho_y, 2))
+    # intenzities projected onto z & y axes with 1PPM (I~|dip*E|^2)
+    rho_z = np.trapz((y*np.exp(+fep_err_estim*np.cos(np.deg2rad(2.0*x))))*np.power(np.cos(np.deg2rad(x)), 2), x) *2.0 *np.pi
+    rho_y = np.trapz((y*np.exp(+fep_err_estim*np.cos(np.deg2rad(2.0*x))))*np.power(np.sin(np.deg2rad(x)), 2), x)      *np.pi
+    print "\nError estimate using FEP-{}*cos(2x)\n1PPM\ndichr. ratio r = Rho_z / Rho_y = {} / {} = {} \nlog_2(r) = {}".format(fep_err_estim, rho_z, rho_y, rho_z/rho_y, math.log(rho_z/rho_y, 2))
+
+
+    ### 2PPM  ###
+    # intenzities projected onto z & y axes with 2PPM (I~|dip*E|^4)
+    rho_z = np.trapz(y*np.power(np.cos(np.deg2rad(x)), 4), x) * 2.0     *np.pi
+    rho_y = np.trapz(y*np.power(np.sin(np.deg2rad(x)), 4), x) * 3.0/4.0 *np.pi
+    print "\n2PPM\ndichr. ratio r = Rho_z / Rho_y = {} / {} = {} \nlog_2(r) = {}".format(rho_z, rho_y, rho_z/rho_y, math.log(rho_z/rho_y, 2))
+
+    # intenzities projected onto z & y axes with 2PPM (I~|dip*E|^4)
+    rho_z = np.trapz((y*np.exp(-fep_err_estim*np.cos(np.deg2rad(2.0*x))))*np.power(np.cos(np.deg2rad(x)), 4), x) * 2.0     *np.pi
+    rho_y = np.trapz((y*np.exp(-fep_err_estim*np.cos(np.deg2rad(2.0*x))))*np.power(np.sin(np.deg2rad(x)), 4), x) * 3.0/4.0 *np.pi
+    print "\nError estimate using FEP-{}*cos(2x)\n2PPM\ndichr. ratio r = Rho_z / Rho_y = {} / {} = {} \nlog_2(r) = {}".format(fep_err_estim, rho_z, rho_y, rho_z/rho_y, math.log(rho_z/rho_y, 2))
+    # intenzities projected onto z & y axes with 2PPM (I~|dip*E|^4)
+    rho_z = np.trapz((y*np.exp(+fep_err_estim*np.cos(np.deg2rad(2.0*x))))*np.power(np.cos(np.deg2rad(x)), 4), x) * 2.0     *np.pi
+    rho_y = np.trapz((y*np.exp(+fep_err_estim*np.cos(np.deg2rad(2.0*x))))*np.power(np.sin(np.deg2rad(x)), 4), x) * 3.0/4.0 *np.pi
+    print "\nError estimate using FEP-{}*cos(2x)\n2PPM\ndichr. ratio r = Rho_z / Rho_y = {} / {} = {} \nlog_2(r) = {}".format(fep_err_estim, rho_z, rho_y, rho_z/rho_y, math.log(rho_z/rho_y, 2))
+
 
     hist  = np.histogram(x, weights=wfs, bins=90, range=(0.0, 90.0), density=True)
 
     plt.xlabel("tdm orientation [deg]")
     plt.ylabel("probability density")
     binwidth = hist[1][1] - hist[1][0]
-    plt.plot(hist[1][:-1]+binwidth*0.5, hist[0], lw=2.0, color='black')
-    plt.savefig("tdm_WHAM-distrib.png", papertype="letter", dpi=300)
+    plt.plot(hist[1][:-1]+binwidth, hist[0], lw=2.0, color='black')
+    plt.savefig("tdm_WHAM-distrib_a.png", papertype="letter", dpi=300)
